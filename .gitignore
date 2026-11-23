@@ -1,0 +1,11 @@
+# Created by the app - personal settings and the record of renames and deletes
+*.ini
+*.log
+
+# Built program and release zips (upload the zip to GitHub Releases instead)
+*.exe
+dist/
+
+# DAT packs from DAT-o-MATIC (large, and downloaded separately)
+No-Intro Love Pack*/
+*.dat

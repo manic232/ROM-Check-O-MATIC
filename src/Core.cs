@@ -115,7 +115,36 @@ namespace RomCheckOMatic
                 while (!string.IsNullOrEmpty(p.CloneOf) && byId.TryGetValue(p.CloneOf, out next) && next != p && hops++ < 10) p = next;
                 g.Parent = p;
             }
+
+            // Redump's DATs don't group versions, so 1G1R groups them by title instead: "Game (USA)" and
+            // "Game (Europe) (Rev 1)" are versions of one title. Disc numbers stay part of the title, so each
+            // disc of a game is kept: "Game (USA) (Disc 2)" goes with "Game (Europe) (Disc 2)", never with Disc 1.
+            if (!dat.Games.Any(g => !string.IsNullOrEmpty(g.CloneOf)) &&
+                new[] { info }.Concat(extras).Any(d => d.Author.IndexOf("redump", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                var first = new Dictionary<string, DatGame>(StringComparer.OrdinalIgnoreCase);
+                foreach (var g in dat.Games)
+                {
+                    string key = TitleKey(g.Name);
+                    DatGame p;
+                    if (!first.TryGetValue(key, out p)) first[key] = p = g;
+                    g.Parent = p;
+                }
+            }
             return dat;
+        }
+
+        // Tags that make a different disc (or a different set of games), not another version of the same one.
+        static readonly Regex DiscTag = new Regex(@"^(Disc|Disk|Side|Part|Volume|Vol\.?)\s|^\d+-in-1$", RegexOptions.IgnoreCase);
+
+        // The title a version belongs to: the name before its tags, plus any disc number.
+        // "Final Fantasy VII (Europe) (Fr) (Disc 2)" gives "final fantasy vii|disc 2".
+        public static string TitleKey(string name)
+        {
+            int cut = name.IndexOf(" (", StringComparison.Ordinal);
+            string title = (cut > 0 ? name.Substring(0, cut) : name).Trim();
+            var discs = Preference.Tags(name).Where(t => DiscTag.IsMatch(t)).Select(t => t.ToLowerInvariant());
+            return title.ToLowerInvariant() + "|" + string.Join("|", discs);
         }
 
         public List<DatInfo> Extras = new List<DatInfo>();
@@ -221,14 +250,14 @@ namespace RomCheckOMatic
     [Flags]
     enum GameType
     {
-        None = 0, Beta = 1, Proto = 2, Demo = 4, Unlicensed = 8, Pirate = 16, Aftermarket = 32, Bios = 64, Program = 128, Rerelease = 256
+        None = 0, Beta = 1, Proto = 2, Demo = 4, Unlicensed = 8, Pirate = 16, Aftermarket = 32, Bios = 64, Program = 128
     }
 
     static class GameTypes
     {
         public static readonly GameType[] All = {
             GameType.Beta, GameType.Proto, GameType.Demo, GameType.Unlicensed, GameType.Pirate,
-            GameType.Aftermarket, GameType.Bios, GameType.Program, GameType.Rerelease };
+            GameType.Aftermarket, GameType.Bios, GameType.Program };
 
         public static string Label(GameType t)
         {
@@ -242,7 +271,6 @@ namespace RomCheckOMatic
                 case GameType.Aftermarket: return "Aftermarket ROMs (new releases for old systems)";
                 case GameType.Bios: return "BIOS files";
                 case GameType.Program: return "Applications and test programs";
-                case GameType.Rerelease: return "Re-releases, collections and digital versions";
                 default: return t.ToString();
             }
         }
@@ -259,7 +287,6 @@ namespace RomCheckOMatic
                 case GameType.Aftermarket: return "aftermarket";
                 case GameType.Bios: return "BIOS";
                 case GameType.Program: return "applications";
-                case GameType.Rerelease: return "re-releases";
                 default: return t.ToString();
             }
         }
@@ -275,36 +302,6 @@ namespace RomCheckOMatic
         static readonly Regex DemoTag = new Regex(@"\b(Demo|Autodemo|Sample|Kiosk|Trial|Taikenban|Preview|Promo)\b", RegexOptions.IgnoreCase);
         static readonly Regex ProgramTag = new Regex(@"^((Test|Music) )?Program$", RegexOptions.IgnoreCase);
 
-        // Versions taken from a later re-release: other consoles and services, mini consoles, collections,
-        // reissue publishers, budget labels and digital stores. Matched against each part of a tag,
-        // e.g. "(Virtual Console, Switch Online)" is checked as "Virtual Console" and "Switch Online".
-        static readonly Regex RereleaseTag = new Regex(@"^(" + string.Join("|", new[] {
-            @".*Virtual Console", @"Virtual Wii", @"(Nintendo )?Switch( Online)?", @"Nintendo Classics", @"Classic Mini",
-            @".*\bMini( \d+)?", @"Capcom Classics Mini Mix", @"Wii( U)?", @"Game ?Cube", @"Xbox( 360)?", @"PS Vita",
-            @"Animal Crossing", @"e-Reader", @"Sega Channel", @"Sega Game Toshokan", @"(Super )?Mega Drive \d",
-            @"Atari Flashback", @"Evercade", @"Retro-Bit.*", @"Limited Run Games", @"Strictly Limited Games",
-            @"Piko Interactive", @"Columbus Circle", @"Ratalaika Games", @"QUByte Classics", @"Dotemu", @"iam8bit",
-            @"Red Art Games", @"Pixel Heart", @"Capcom Town", @"Steam", @"GOG", @"itch\.io", @"Amazon Games", @"Digital",
-            @".*Arcade Garage", @"Disney Classic Games", @"Sega Ages.*", @"Sega Smash Pack.*", @"Sega 3D Classics.*",
-            @"Sega Classic", @"Namco Museum.*", @"PS2 Classics", @".*\bthe Best", @"Budget.*", @"Reprint.*",
-            @".*Collection.*", @".+Compilation.*", @"Compilation.+" }) + @")$", RegexOptions.IgnoreCase);
-
-        // Look like re-releases but aren't: where some Arduboy dumps came from.
-        static readonly HashSet<string> NotRerelease = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Erwin's Collection" };
-
-        static bool IsRerelease(string tag, bool amiibo)
-        {
-            foreach (var part in tag.Split(','))
-            {
-                string p = part.Trim();
-                if (p.Length == 0 || NotRerelease.Contains(p)) continue;
-                // In the amiibo DAT, "(Animal Crossing)" is a figure's series, not an NES game taken from Animal Crossing.
-                if (amiibo && p.Equals("Animal Crossing", StringComparison.OrdinalIgnoreCase)) continue;
-                if (RereleaseTag.IsMatch(p)) return true;
-            }
-            return false;
-        }
-
         public static GameType Of(string name, IEnumerable<string> categories, string datName = null)
         {
             var t = GameType.None;
@@ -316,7 +313,6 @@ namespace RomCheckOMatic
                 if (ProtoTag.IsMatch(tag)) t |= GameType.Proto;
                 if (DemoTag.IsMatch(tag)) t |= GameType.Demo;
                 if (ProgramTag.IsMatch(tag)) t |= GameType.Program;
-                if (IsRerelease(tag, datName != null && datName.IndexOf("amiibo", StringComparison.OrdinalIgnoreCase) >= 0)) t |= GameType.Rerelease;
             }
             if (aftermarket) t |= GameType.Aftermarket;
             if (pirate) t |= GameType.Pirate;
@@ -1428,7 +1424,7 @@ namespace RomCheckOMatic
                 }
                 return;
             }
-            var full = touched.Where(g => g.Roms.Count <= keys.Count && g.Roms.All(r => keys.Contains(r.Key))).ToList();
+            var full = touched.Where(g => g.Roms.All(r => keys.Contains(r.Key))).ToList();
 
             // A MAME game holds copies of its BIOS's and devices' ROMs. When it's out of date (the DAT now has
             // more or different ROMs for it), it still holds the whole BIOS, but it isn't a copy of the BIOS: it's
@@ -1439,9 +1435,8 @@ namespace RomCheckOMatic
                 var ownKeys = new HashSet<string>(own.Roms.Select(r => r.Key));
                 if (full.All(g => g != own && g.Roms.All(r => ownKeys.Contains(r.Key))))
                 {
-                    int have = own.Roms.Count(r => keys.Contains(r.Key));
                     f.Kind = FileKind.Incomplete;
-                    f.Detail = "Has only part of \"" + own.Name + "\" (" + have + " of " + own.Roms.Count + " files match this DAT)";
+                    f.Detail = MissingParts(own, keys, baseName);
                     return;
                 }
             }
@@ -1458,13 +1453,25 @@ namespace RomCheckOMatic
                 // Name the game the file is named after, if it's one of those it partly holds.
                 var part = own != null && seen.Contains(own) ? own : touched[0];
                 f.Kind = FileKind.Incomplete;
-                f.Detail = "Has only part of \"" + part.Name + "\"" +
-                           (part.Roms.Count > 1 ? " (" + part.Roms.Count(r => keys.Contains(r.Key)) + " of " + part.Roms.Count + " files match this DAT)" : "");
+                f.Detail = MissingParts(part, keys, baseName);
                 return;
             }
             // Prefer the game whose name the file already has.
             f.Candidates = full.OrderBy(g => g.Name == baseName ? 0 : string.Equals(g.Name, baseName, StringComparison.OrdinalIgnoreCase) ? 1 : 2)
                                .ThenBy(g => g.Name, StringComparer.Ordinal).ToList();
+        }
+
+        // For a file holding only part of a game: the game's files it doesn't hold (missing, or there with
+        // different contents), e.g. "Missing file - 720-eeprom.bin". The game is named too when it isn't the one
+        // the file is named after. Long lists are cut short.
+        static string MissingParts(DatGame g, HashSet<string> keys, string fileName)
+        {
+            var names = g.Roms.Where(r => !keys.Contains(r.Key)).Select(r => r.Name).Distinct().ToList();
+            string of = g.Name == fileName ? "" : " for \"" + g.Name + "\"";
+            if (names.Count == 0) return "Part of \"" + g.Name + "\"";
+            const int show = 5;
+            return (names.Count == 1 ? "Missing file" : "Missing files") + of + " - " + string.Join(", ", names.Take(show)) +
+                   (names.Count > show ? " and " + (names.Count - show) + " more" : "");
         }
 
         static string BaseName(FileResult f)
@@ -1676,8 +1683,58 @@ namespace RomCheckOMatic
 
     // ---------------------------------------------------------------- fixing
 
+    // Sends files and folders to the Recycle Bin, using Windows' own delete. When something can't be recycled
+    // (too big for the Recycle Bin, or on a network drive), Windows asks before deleting it permanently.
+    static class RecycleBin
+    {
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        struct SHFILEOPSTRUCT
+        {
+            public IntPtr hwnd;
+            public uint wFunc;
+            public string pFrom, pTo;
+            public ushort fFlags;
+            [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] public bool fAnyOperationsAborted;
+            public IntPtr hNameMappings;
+            public string lpszProgressTitle;
+        }
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+        static extern int SHFileOperation(ref SHFILEOPSTRUCT op);
+
+        const uint FO_DELETE = 3;
+        const ushort FOF_SILENT = 0x4, FOF_NOCONFIRMATION = 0x10, FOF_ALLOWUNDO = 0x40, FOF_NOERRORUI = 0x400, FOF_WANTNUKEWARNING = 0x4000;
+
+        // Returns null when it's gone to the Recycle Bin (or was permanently deleted after you agreed), or what went wrong.
+        public static string Send(string path)
+        {
+            string result = null;
+            // The shell's warning needs a UI thread of its own.
+            var t = new Thread(() =>
+            {
+                var op = new SHFILEOPSTRUCT
+                {
+                    wFunc = FO_DELETE,
+                    pFrom = Path.GetFullPath(path) + "\0\0",
+                    fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING
+                };
+                int code = SHFileOperation(ref op);
+                if (op.fAnyOperationsAborted) result = "Kept (you chose not to delete it permanently)";
+                else if (code != 0) result = "Couldn't move it to the Recycle Bin (error " + code + ")";
+                else if (File.Exists(path) || Directory.Exists(path)) result = "It's still there";
+            });
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            t.Join();
+            return result;
+        }
+    }
+
     static class Fixer
     {
+        // Deletes send files to the Recycle Bin (Options > Delete to the Recycle Bin), rather than deleting them outright.
+        public static bool UseRecycleBin = true;
+
         // Gives the file its DAT name (and the file inside the zip). Returns null on success, or what went wrong.
         public static string Fix(FileResult f)
         {
@@ -1962,6 +2019,12 @@ namespace RomCheckOMatic
         {
             try
             {
+                if (UseRecycleBin && (f.IsFolder ? Directory.Exists(f.Path) : File.Exists(f.Path)))
+                {
+                    string err = RecycleBin.Send(f.Path);
+                    if (err == null) Log.Write("Moved to the Recycle Bin: \"" + f.Path + "\" (" + f.Detail + ")");
+                    return err;
+                }
                 if (f.IsFolder)
                 {
                     // A MAME game's folder of CHDs.
@@ -2162,10 +2225,12 @@ namespace RomCheckOMatic
             {
                 sb.AppendLine(new string('=', 78));
                 sb.AppendLine(s.FolderName);
+                sb.AppendLine();
                 if (s.Error != null) { sb.AppendLine("  " + s.Error); sb.AppendLine(); continue; }
                 sb.AppendLine("  DAT: " + s.DatText);
-                if (s.Excluded != GameType.None) sb.AppendLine("  Leaving out: " + GameTypes.Describe(s.Excluded));
-                if (s.IgnoredRegions.Count > 0) sb.AppendLine("  Leaving out ROMs only from: " + string.Join(", ", s.IgnoredRegions));
+                sb.AppendLine();
+                if (s.Excluded != GameType.None) { sb.AppendLine("  Excluded ROM types: " + GameTypes.Describe(s.Excluded)); sb.AppendLine(); }
+                if (s.IgnoredRegions.Count > 0) { sb.AppendLine("  Excluded ROM regions: " + string.Join(", ", s.IgnoredRegions)); sb.AppendLine(); }
                 sb.AppendLine("  Have " + s.Have + " of " + s.Total + (s.OneGame ? " titles (1G1R)" : " ROMs") +
                               ", missing " + s.MissingCount + " (plus " + s.MiaCount + " MIA)");
                 Section(sb, "Missing", s.Missing.Where(g => includeMia || !g.Mia).Select(g => g.Name + (g.Mia ? "  [MIA]" : "") +

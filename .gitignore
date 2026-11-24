@@ -9,3 +9,6 @@ dist/
 # DAT packs from DAT-o-MATIC (large, and downloaded separately)
 No-Intro Love Pack*/
 *.dat
+
+# The record of the last scan, for "What changed" (one per collection)
+*.scan

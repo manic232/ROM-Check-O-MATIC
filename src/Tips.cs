@@ -1,5 +1,5 @@
 // ROM Check O-MATIC - the pop-up tips shown when the mouse rests on a button, tick box or field.
-// One tip object serves every window, so a single setting (Theme > Show Pop-up Tips) turns them all on or off.
+// One tip object serves every window, so a single setting (Options > Show Pop-up Tips) turns them all on or off.
 
 using System.Windows.Forms;
 

@@ -24,7 +24,6 @@ namespace RomCheckOMatic
                 case GameType.Aftermarket: return "(Aftermarket)";
                 case GameType.Bios: return "[BIOS] ...";
                 case GameType.Program: return "(Program), (Test Program), applications";
-                case GameType.Rerelease: return "(Virtual Console), (Evercade), (Steam), (Sega Channel), mini consoles...";
                 default: return "";
             }
         }
@@ -78,7 +77,7 @@ namespace RomCheckOMatic
             var all = new Button { Text = "Keep All", AutoSize = true, MinimumSize = new Size(80, 0) };
             var gamesOnly = new Button { Text = "Finished ROMs Only", AutoSize = true, MinimumSize = new Size(80, 0) };
             Tips.Set(all, "Ticks every kind, so nothing is left out.");
-            Tips.Set(gamesOnly, "Unticks everything except finished ROMs: no betas, demos, unlicensed,\npirate or aftermarket ROMs, BIOS files, applications or re-releases.");
+            Tips.Set(gamesOnly, "Unticks everything except finished ROMs: no betas, prototypes, demos,\nunlicensed, pirate or aftermarket ROMs, BIOS files or applications.");
             ok.Click += (s, e) =>
             {
                 Exclude = GameType.None;

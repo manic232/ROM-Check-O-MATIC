@@ -91,7 +91,7 @@ namespace RomCheckOMatic
         bool busy;
 
         TextBox romBox, datBox, dlBox, cueBox, filterBox;
-        Button scanButton, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, regionButton, typesButton, themeButton, fixButton, deleteButton, addButton, exportButton;
+        Button scanButton, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, regionButton, typesButton, themeButton, fixButton, deleteButton, addButton, exportButton, changesButton;
         CheckBox oneGameBox, miaBox, autoBox, scanOnOpenBox, keepPacksBox;
         DownloadWatcher watcher;
         bool loading = true;
@@ -119,6 +119,7 @@ namespace RomCheckOMatic
             BuildMiddle();
             BuildMenus();
             SetTips();
+            Fixer.UseRecycleBin = settings.UseRecycleBin;
 
             FillCollectionBox();
             ShowCollectionSettings();
@@ -144,6 +145,7 @@ namespace RomCheckOMatic
                 // Adding downloads automatically also needs to know what's missing, so it scans too.
                 if (autoBox.Checked) UpdateWatcher(false);
                 if ((scanOnOpenBox.Checked || autoBox.Checked) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
+                if (settings.CheckUpdates) CheckForUpdate(false);
             };
             FormClosing += (s, e) =>
             {
@@ -188,7 +190,7 @@ namespace RomCheckOMatic
             // These buttons sit at the right of the window, so their menus open leftwards: opening rightwards
             // would push them off the edge, and on a second screen Windows would move them onto it.
             datButton = MakeButton("DAT Files ▾", (s, e) => datMenu.Show(datButton, new Point(datButton.Width, datButton.Height), ToolStripDropDownDirection.BelowLeft));
-            themeButton = MakeButton("Theme ▾", (s, e) => themeMenu.Show(themeButton, new Point(themeButton.Width, themeButton.Height), ToolStripDropDownDirection.BelowLeft));
+            themeButton = MakeButton("Options ▾", (s, e) => themeMenu.Show(themeButton, new Point(themeButton.Width, themeButton.Height), ToolStripDropDownDirection.BelowLeft));
             themeButton.Dock = DockStyle.Fill;
             datButton.Dock = DockStyle.Fill;
             scanButton.Dock = DockStyle.Fill;
@@ -279,7 +281,7 @@ namespace RomCheckOMatic
             return new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 6, 3, 3) };
         }
 
-        // The pop-up tips (Theme > Show Pop-up Tips turns them off).
+        // The pop-up tips (Options > Show Pop-up Tips turns them off).
         void SetTips()
         {
             Tips.Enabled = settings.ShowTips;
@@ -298,11 +300,11 @@ namespace RomCheckOMatic
             Tips.Set(cueBrowse, "Choose the folder that holds your cue sheet packs.");
             Tips.Set(oneGameBox, "1G1R (one game, one ROM): keep only the best version of each title,\nby your region order. Other versions are listed as unneeded.");
             Tips.Set(regionButton, "Set the region order for 1G1R, and untick regions to leave out\nROMs released only there.");
-            Tips.Set(typesButton, "Choose which kinds of ROM to keep: betas, prototypes, demos,\nunlicensed, pirate, aftermarket, BIOS, applications and re-releases.");
+            Tips.Set(typesButton, "Choose which kinds of ROM to keep: betas, prototypes, demos,\nunlicensed, pirate, aftermarket, BIOS files and applications.");
             Tips.Set(scanOnOpenBox, "Scan your set every time the app opens, so the lists are always up to date.");
             Tips.Set(autoBox, "While the app is open, ROMs that land in your Missing ROMs folder are added\nto your set as soon as they've finished downloading.");
             Tips.Set(keepPacksBox, "Ticked: games are fixed inside your TOSEC packs (one zip per DAT).\nUnticked: Fix Wrong Names unpacks each pack into a folder with one zip per game.");
-            Tips.Set(themeButton, "Match Windows, or stay light or dark. Pop-up tips can be turned off here too.");
+            Tips.Set(themeButton, "Theme (match Windows, light or dark), pop-up tips, the Recycle Bin\nand update checks. These settings are shared by every collection.");
             Tips.Set(fixButton, "Renames every file under Wrong Name to its DAT name (inside zips too).\nWith a system selected, only that system. You're asked first.");
             Tips.Set(deleteButton, "Permanently deletes every file under Unneeded.\nWith a system selected, only that system. You're asked first.");
             Tips.Set(exportButton, "Saves a text report of what's missing, misnamed and unneeded.\nWith All systems selected, each system gets its own report in its own folder.");
@@ -324,11 +326,17 @@ namespace RomCheckOMatic
             exportButton.Margin = new Padding(16, 3, 3, 3);
             progress = new ProgressBar { Dock = DockStyle.Fill, Margin = new Padding(8, 7, 3, 7), Visible = false };
             statusLabel = new Label { AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(8, 8, 3, 3) };
+            changesButton = MakeButton("What Changed...", (s, e) => ShowChanges());
+            changesButton.Visible = false;
+            Tips.Set(changesButton, "Lists the ROMs added and newly missing in each system since the last scan.");
+            var status = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Dock = DockStyle.Fill, Margin = new Padding(0) };
+            status.Controls.Add(statusLabel);
+            status.Controls.Add(changesButton);
             bottom.Controls.Add(fixButton, 0, 0);
             bottom.Controls.Add(deleteButton, 1, 0);
             bottom.Controls.Add(exportButton, 2, 0);
             bottom.Controls.Add(progress, 3, 0);
-            bottom.Controls.Add(statusLabel, 4, 0);
+            bottom.Controls.Add(status, 4, 0);
             Controls.Add(bottom);
         }
 
@@ -468,25 +476,62 @@ namespace RomCheckOMatic
 
             listMenu = new ContextMenuStrip();
 
+            // Options: settings shared by every collection.
             themeMenu = new ContextMenuStrip();
+            themeMenu.Items.Add(new ToolStripLabel("Theme") { ForeColor = SystemColors.GrayText });
+            var themeItems = new List<ToolStripMenuItem>();
             foreach (var choice in new[] { new[] { "System", "Match Windows" }, new[] { "Light", "Light" }, new[] { "Dark", "Dark" } })
             {
                 string value = choice[0];
-                var item = new ToolStripMenuItem(choice[1]);
+                var item = new ToolStripMenuItem(choice[1]) { Tag = value };
                 item.Click += (s, e) => { settings.Theme = value; ApplyTheme(); };
                 themeMenu.Items.Add(item);
+                themeItems.Add(item);
             }
             themeMenu.Items.Add(new ToolStripSeparator());
             var tipsItem = new ToolStripMenuItem("Show Pop-up Tips");
             tipsItem.Click += (s, e) => { settings.ShowTips = !settings.ShowTips; SetTips(); };
             themeMenu.Items.Add(tipsItem);
+            var recycleItem = new ToolStripMenuItem("Delete to the Recycle Bin");
+            recycleItem.Click += (s, e) => { settings.UseRecycleBin = !settings.UseRecycleBin; Fixer.UseRecycleBin = settings.UseRecycleBin; };
+            themeMenu.Items.Add(recycleItem);
+            themeMenu.Items.Add(new ToolStripSeparator());
+            var updatesItem = new ToolStripMenuItem("Check for Updates When the App Opens");
+            updatesItem.Click += (s, e) => { settings.CheckUpdates = !settings.CheckUpdates; if (settings.CheckUpdates) CheckForUpdate(false); };
+            themeMenu.Items.Add(updatesItem);
+            themeMenu.Items.Add("Check for Updates Now", null, (s, e) => CheckForUpdate(true));
             themeMenu.Opening += (s, e) =>
             {
-                string current = settings.Theme;
-                for (int i = 0; i < 3; i++)
-                    ((ToolStripMenuItem)themeMenu.Items[i]).Checked = new[] { "System", "Light", "Dark" }[i] == current;
+                foreach (var item in themeItems) item.Checked = (string)item.Tag == settings.Theme;
                 tipsItem.Checked = settings.ShowTips;
+                recycleItem.Checked = settings.UseRecycleBin;
+                updatesItem.Checked = settings.CheckUpdates;
             };
+        }
+
+        // ------------------------------------------------------------ updates
+
+        // Asks GitHub whether there's a newer version. "manual" is Check for Updates Now: it always says what
+        // it found. The check when the app opens stays quiet unless there's a new version it hasn't mentioned yet.
+        async void CheckForUpdate(bool manual)
+        {
+            UpdateInfo latest;
+            try { latest = await Task.Run(() => Updates.Latest()); }
+            catch (Exception ex)
+            {
+                if (manual) ThemedBox.Show(this, "Couldn't check for updates:\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (latest.Version <= Updates.Current)
+            {
+                if (manual) ThemedBox.Show(this, "You have the latest version (v" + Updates.Current + ").", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (!manual && settings.MentionedUpdate == latest.Tag) return;
+            settings.MentionedUpdate = latest.Tag;
+            if (ThemedBox.Show(this, "ROM Check O-MATIC " + latest.Tag + " is available (you have v" + Updates.Current + ").\n\nOpen its download page?",
+                               Text, MessageBoxButtons.YesNo, MessageBoxIcon.Information) == DialogResult.Yes)
+                OpenUrl(latest.Page);
         }
 
         // ------------------------------------------------------------ collections
@@ -556,6 +601,7 @@ namespace RomCheckOMatic
             settings.Collection = picked;
             FillCollectionBox();
             results.Clear();
+            changesButton.Visible = false;
             index = null;
             RefreshAll();
             ShowCollectionSettings();
@@ -1087,6 +1133,7 @@ namespace RomCheckOMatic
 
             SetBusy(true);
             results.Clear();
+            changesButton.Visible = false;
             RefreshAll();
             cts = new CancellationTokenSource();
             var ct = cts.Token;
@@ -1119,7 +1166,9 @@ namespace RomCheckOMatic
                 await Task.Yield();
                 ShowCueRow();
                 UpdateDatLabel();
-                statusLabel.Text = "Scanned "+ results.Count + " folder" + (results.Count == 1 ? "" : "s") + " in " + sw.Elapsed.TotalSeconds.ToString("0.0") + "s";
+                string scanned = "Scanned " + results.Count + " folder" + (results.Count == 1 ? "" : "s") + " in " + sw.Elapsed.TotalSeconds.ToString("0.0") + "s";
+                statusLabel.Text = scanned;
+                await CompareWithLastScan(scanned);
             }
             catch (OperationCanceledException) { statusLabel.Text = "Scan stopped"; }
             catch (Exception ex)
@@ -1148,9 +1197,47 @@ namespace RomCheckOMatic
                     int i = results.FindIndex(x => SamePath(x.Folder, r.Folder));
                     if (i >= 0) results[i] = r; else results.Add(r);
                 }
+                // Changes made in the app (fixes, deletes, added ROMs) become part of the record too, so the next
+                // scan only reports what changed outside it.
+                string collection = settings.Collection;
+                await Task.Run(() =>
+                {
+                    string path = ScanHistory.PathFor(collection);
+                    var history = ScanHistory.Load(path);
+                    ScanHistory.Update(history, fresh);
+                    ScanHistory.Save(path, history);
+                });
             }
             catch (OperationCanceledException) { }
             finally { SetBusy(false); RefreshAll(); }
+        }
+
+        // ------------------------------------------------------------ changes since the last scan
+
+        List<SystemChanges> lastChanges;
+
+        // After a full scan: compares it with the record of the last one, says what changed, and saves the new record.
+        async Task CompareWithLastScan(string scanned)
+        {
+            string path = ScanHistory.PathFor(settings.Collection);
+            var now = results.ToList();
+            List<SystemChanges> changes = null;
+            await Task.Run(() =>
+            {
+                var history = ScanHistory.Load(path);
+                if (history.Count > 0) changes = ScanHistory.Compare(history, now);
+                ScanHistory.Update(history, now);
+                ScanHistory.Save(path, history);
+            });
+            lastChanges = changes;
+            statusLabel.Text = scanned + (changes == null ? "" : ". " + ScanHistory.Summary(changes));
+            changesButton.Visible = changes != null && changes.Count > 0;
+        }
+
+        void ShowChanges()
+        {
+            if (lastChanges == null || lastChanges.Count == 0) return;
+            using (var f = new TextForm(Text, ScanHistory.Summary(lastChanges) + ":", ScanHistory.Details(lastChanges))) f.ShowDialog(this);
         }
 
         // ------------------------------------------------------------ showing results
@@ -1507,13 +1594,17 @@ namespace RomCheckOMatic
             if (busy || files.Count == 0) return;
             long size = files.Sum(f => f.Length);
             var kinds = files.GroupBy(f => f.Kind).Select(g => g.Count().ToString("N0") + " " + KindText(g.Key, g.Count())).ToList();
-            string msg = "Permanently delete " + Count(files.Count, "file") + " (" + Naming.Size(size) + ")?\n\n" +
-                         string.Join("\n", kinds) + "\n\nThis can't be undone.";
+            bool recycle = settings.UseRecycleBin;
+            string msg = (recycle ? "Move " + Count(files.Count, "file") + " (" + Naming.Size(size) + ") to the Recycle Bin?\n\n"
+                                  : "Permanently delete " + Count(files.Count, "file") + " (" + Naming.Size(size) + ")?\n\n") +
+                         string.Join("\n", kinds) +
+                         (recycle ? "\n\nIf Windows can't recycle something (too big, or on a network drive), it asks before deleting it permanently."
+                                  : "\n\nThis can't be undone. (To use the Recycle Bin instead, tick Options > Delete to the Recycle Bin.)");
             var packs = files.Where(f => f.InPack).Select(f => f.System).Distinct().ToList();
             if (packs.Count > 0)
                 msg += "\n\nGames inside " + Count(packs.Count, "TOSEC pack") + " are taken out by rewriting the pack (" +
                        Naming.Size(packs.Sum(s => new FileInfo(s.Folder).Length)) + "), which needs that much free space while it's made. " +
-                       "The new copy is checked by unpacking every file before it replaces the old one.";
+                       "The new copy is checked by unpacking every file before it replaces the old one. These can't go to the Recycle Bin.";
             if (ThemedBox.Show(this, msg, Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
 
             SetBusy(true);
@@ -1823,6 +1914,7 @@ namespace RomCheckOMatic
                 try
                 {
                     File.WriteAllText(d.FileName, Report.Build(Scope(), miaBox.Checked), System.Text.Encoding.UTF8);
+                    if (SamePath(Path.GetDirectoryName(d.FileName), folder)) RemoveOldReports(sys, d.FileName);
                     Process.Start(d.FileName);
                 }
                 catch (Exception ex) { ThemedBox.Show(this, "Couldn't save the report:\n\n" + ex.Message, Text); }
@@ -1837,19 +1929,39 @@ namespace RomCheckOMatic
             return Path.GetFileNameWithoutExtension(fileName) + " - " + name + ".txt";
         }
 
+        // After saving a report: deletes the system's earlier reports in the same folder, so only the newest is kept.
+        // Only files named exactly as the app names them are removed ("!ROM Check report 2026-11-23.txt", or for a
+        // TOSEC pack "!ROM Check report 2026-11-23 - <pack>.txt", so other packs' reports in the folder are left alone).
+        internal static void RemoveOldReports(SystemResult s, string kept)
+        {
+            string folder = Path.GetDirectoryName(kept);
+            string ending = s.IsPack ? PackReportName("x.txt", s).Substring(1) : ".txt";   // " - <pack>.txt" or ".txt"
+            var pattern = new Regex("^" + Regex.Escape(Scanner.ReportPrefix) + @" \d{4}-\d{2}-\d{2}" + Regex.Escape(ending) + "$", RegexOptions.IgnoreCase);
+            foreach (var p in Directory.GetFiles(folder, Scanner.ReportPrefix + "*.txt"))
+            {
+                if (SamePath(p, kept) || !pattern.IsMatch(Path.GetFileName(p))) continue;
+                try { File.Delete(p); Log.Write("Deleted older report \"" + p + "\""); } catch { }
+            }
+        }
+
         // With all systems selected: one report in each system's own folder.
         void SaveReportPerSystem(string fileName)
         {
             var systems = results.Where(s => s.Error == null && (Directory.Exists(s.Folder) || s.IsPack)).ToList();
             if (systems.Count == 0) return;
             string msg = "Save a report in each of the " + Count(systems.Count, "system folder") + ", named:\n\n" + fileName +
-                         "\n\nA report already saved today is replaced. Folders with no matching DAT are skipped.";
+                         "\n\nEach system's older reports are deleted, so only the newest is kept. Folders with no matching DAT are skipped.";
             if (ThemedBox.Show(this, msg, Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
 
             var failed = new List<string>();
             foreach (var s in systems)
             {
-                try { File.WriteAllText(s.IsPack ? Path.Combine(Path.GetDirectoryName(s.Folder), PackReportName(fileName, s)) : Path.Combine(s.Folder, fileName), Report.Build(new[] { s }, miaBox.Checked), System.Text.Encoding.UTF8); }
+                try
+                {
+                    string path = s.IsPack ? Path.Combine(Path.GetDirectoryName(s.Folder), PackReportName(fileName, s)) : Path.Combine(s.Folder, fileName);
+                    File.WriteAllText(path, Report.Build(new[] { s }, miaBox.Checked), System.Text.Encoding.UTF8);
+                    RemoveOldReports(s, path);
+                }
                 catch (Exception ex) { failed.Add(s.FolderName + ": " + ex.Message); }
             }
             string summary = "Saved " + Count(systems.Count - failed.Count, "report") + ", one in each system folder.";

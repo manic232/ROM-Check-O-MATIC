@@ -234,7 +234,8 @@ namespace RomCheckOMatic
             top.Controls.Add(cueBrowse, 2, 4);
             cueLabel.Visible = cueBox.Visible = cueBrowse.Visible = false;   // until the DATs are read
 
-            var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false, Margin = new Padding(0) };
+            // Wraps onto a second line when the window is too narrow, rather than running under the buttons at the right.
+            var options = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Dock = DockStyle.Fill, WrapContents = true, Margin = new Padding(0) };
             oneGameBox = new CheckBox { Text = "Use 1G1R", AutoSize = true, Margin = new Padding(3, 7, 3, 3) };
             oneGameBox.CheckedChanged += (s, e) =>
             {

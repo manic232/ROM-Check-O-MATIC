@@ -84,7 +84,7 @@ namespace RomCheckOMatic
                         list.Add(Tuple.Create(s, g));
                         sizes.Add(r.Size);
                     }
-                foreach (var f in s.Files.Where(f => f.Game != null && (f.Kind == FileKind.Ok || f.IsFixable)))
+                foreach (var f in s.Files.Where(f => f.HoldsGame))
                     foreach (var r in f.Game.Roms) { have.Add(r.Key); sizes.Add(r.Size); }
                 try { foreach (var k in index.Load(s.Dat).ByKey.Keys) inDat.Add(k); } catch { }
             }

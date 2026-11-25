@@ -41,7 +41,7 @@ namespace RomCheckOMatic
         {
             var snap = new SystemSnapshot();
             foreach (var f in s.Files)
-                if (f.Game != null && (f.Kind == FileKind.Ok || f.IsFixable || f.Kind == FileKind.CueOutdated))
+                if (f.HoldsGame || (f.Game != null && f.Kind == FileKind.CueOutdated))
                     snap.Have.Add(f.Game.Name);
             foreach (var g in s.Missing) snap.Missing.Add(g.Name);
             return snap;

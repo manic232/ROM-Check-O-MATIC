@@ -128,8 +128,10 @@ namespace RomCheckOMatic
                     var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix |
                                 (col.TextAlign == HorizontalAlignment.Right ? TextFormatFlags.Right : TextFormatFlags.Left);
                     var r = new Rectangle(e.Bounds.X + 6, e.Bounds.Y, e.Bounds.Width - 12, e.Bounds.Height);
-                    bool plain = e.Item.ForeColor == lv.ForeColor || e.Item.ForeColor == SystemColors.WindowText;
-                    var colour = selected && p.Dark ? Color.White : (plain ? p.Text : e.Item.ForeColor);
+                    // A row can colour each of its cells (the system list's counts: green for 0, red otherwise).
+                    var fore = e.Item.UseItemStyleForSubItems ? e.Item.ForeColor : e.SubItem.ForeColor;
+                    bool plain = fore == lv.ForeColor || fore == SystemColors.WindowText;
+                    var colour = selected && p.Dark ? Color.White : (plain ? p.Text : fore);
                     TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.Item.Font ?? lv.Font, r, colour, flags);
                 };
                 // Owner-drawn rows don't always repaint fully when the selection moves.
@@ -230,6 +232,82 @@ namespace RomCheckOMatic
             };
         }
 
+        // Windows draws the closed box of a drop-down list white, whatever its colours, so in dark mode
+        // the box is painted here: dark background, light text, a thin border and a chevron.
+        class DarkCombo : NativeWindow
+        {
+            static readonly System.Collections.Generic.HashSet<ComboBox> hookedCombos = new System.Collections.Generic.HashSet<ComboBox>();
+            readonly ComboBox cb;
+            bool hover;
+
+            [StructLayout(LayoutKind.Sequential)]
+            struct PAINTSTRUCT { public IntPtr hdc; public int fErase; public int l, t, r, b; public int fRestore, fIncUpdate; [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)] public byte[] reserved; }
+            [DllImport("user32.dll")] static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT ps);
+            [DllImport("user32.dll")] static extern bool EndPaint(IntPtr hwnd, ref PAINTSTRUCT ps);
+            const int WM_PAINT = 0x000F, WM_ERASEBKGND = 0x0014, WM_PRINTCLIENT = 0x0318;
+
+            DarkCombo(ComboBox cb)
+            {
+                this.cb = cb;
+                cb.HandleCreated += (s, e) => AssignHandle(cb.Handle);
+                cb.HandleDestroyed += (s, e) => ReleaseHandle();
+                cb.MouseEnter += (s, e) => { hover = true; cb.Invalidate(); };
+                cb.MouseLeave += (s, e) => { hover = false; cb.Invalidate(); };
+                cb.GotFocus += (s, e) => cb.Invalidate();
+                cb.LostFocus += (s, e) => cb.Invalidate();
+                cb.DropDownClosed += (s, e) => cb.Invalidate();
+                cb.EnabledChanged += (s, e) => cb.Invalidate();
+                if (cb.IsHandleCreated) AssignHandle(cb.Handle);
+            }
+
+            public static void Hook(ComboBox cb)
+            {
+                if (hookedCombos.Add(cb)) new DarkCombo(cb);
+                if (cb.IsHandleCreated) cb.Invalidate();
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                if (Current.Dark && (m.Msg == WM_PAINT || m.Msg == WM_PRINTCLIENT || m.Msg == WM_ERASEBKGND))
+                {
+                    if (m.Msg == WM_ERASEBKGND) { m.Result = (IntPtr)1; return; }
+                    if (m.Msg == WM_PRINTCLIENT)
+                    {
+                        using (var g = Graphics.FromHdc(m.WParam)) Draw(g);
+                        return;
+                    }
+                    PAINTSTRUCT ps;
+                    BeginPaint(m.HWnd, out ps);
+                    try { using (var g = Graphics.FromHdc(ps.hdc)) Draw(g); }
+                    finally { EndPaint(m.HWnd, ref ps); }
+                    return;
+                }
+                base.WndProc(ref m);
+            }
+
+            void Draw(Graphics g)
+            {
+                var p = Current;
+                var r = cb.ClientRectangle;
+                bool lit = cb.Enabled && (hover || cb.DroppedDown);
+                using (var back = new SolidBrush(!cb.Enabled ? p.Back : lit ? p.Hover : p.Input)) g.FillRectangle(back, r);
+                using (var pen = new Pen(cb.DroppedDown ? p.Accent : p.Border)) g.DrawRectangle(pen, 0, 0, r.Width - 1, r.Height - 1);
+
+                float scale = g.DpiX / 96f;
+                int arrowWidth = (int)Math.Round(20 * scale);
+                var text = new Rectangle(r.Left + (int)(4 * scale), r.Top, r.Width - arrowWidth - (int)(4 * scale), r.Height);
+                TextRenderer.DrawText(g, cb.Text, cb.Font, text, cb.Enabled ? p.Text : p.Gray,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+                float cx = r.Right - arrowWidth / 2f - 1, cy = r.Top + r.Height / 2f, w = 4 * scale;
+                var old = g.SmoothingMode;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (var pen = new Pen(cb.Enabled ? p.Text : p.Gray, Math.Max(1.2f, 1.4f * scale)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+                    g.DrawLines(pen, new[] { new PointF(cx - w, cy - w / 2), new PointF(cx, cy + w / 2), new PointF(cx + w, cy - w / 2) });
+                g.SmoothingMode = old;
+            }
+        }
+
         static GraphicsPath RoundRect(Rectangle r, int radius)
         {
             int d = radius * 2;
@@ -274,6 +352,7 @@ namespace RomCheckOMatic
                 cb.FlatStyle = p.Dark ? FlatStyle.Flat : FlatStyle.Standard;
                 cb.BackColor = p.Dark ? p.Input : SystemColors.Window;
                 cb.ForeColor = p.Text;
+                if (cb.DropDownStyle == ComboBoxStyle.DropDownList) DarkCombo.Hook(cb);
             }
             else if (c is ListBox)
             {

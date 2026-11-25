@@ -566,6 +566,20 @@ namespace RomCheckOMatic
         {
             get { return ByName.Values.Any(i => i.Author.IndexOf("redump", StringComparison.OrdinalIgnoreCase) >= 0); }
         }
+
+        // Where these DATs come from: "No-Intro", "Redump", "MAME" or "TOSEC" (null if none of these).
+        // No-Intro's and TOSEC's DATs name themselves in "homepage", Redump's in "author", and MAME's in their name.
+        public string Source
+        {
+            get
+            {
+                if (IsTosec) return "TOSEC";
+                if (UsesCueSheets) return "Redump";
+                if (ByName.Values.Any(i => i.Name.StartsWith("MAME", StringComparison.OrdinalIgnoreCase))) return "MAME";
+                if (ByName.Values.Any(i => i.Author.IndexOf("No-Intro", StringComparison.OrdinalIgnoreCase) >= 0)) return "No-Intro";
+                return null;
+            }
+        }
         readonly Dictionary<string, DatFile> loaded = new Dictionary<string, DatFile>(StringComparer.OrdinalIgnoreCase);
         readonly object sync = new object();
 
@@ -1040,6 +1054,7 @@ namespace RomCheckOMatic
         Ok,          // right game, right name
         Misnamed,    // right game, wrong zip name and/or wrong name inside the zip
         NotZipped,   // right game, but a loose file rather than a zip
+        ExtraInside, // right game and names, but the zip also holds files that aren't part of it (only those are unneeded)
         Duplicate,   // a second copy of a game that's already there
         NotPreferred,// one game per title: another version of this title is kept instead
         Excluded,    // a kind of game the user doesn't keep (betas, prototypes...)
@@ -1078,7 +1093,25 @@ namespace RomCheckOMatic
         public string TargetPath;
         internal List<DatGame> Candidates;
 
-        public bool IsUnneeded { get { return Kind == FileKind.Duplicate || Kind == FileKind.NotInDat || Kind == FileKind.NotPreferred || Kind == FileKind.Excluded; } }
+        public List<ZipItem> ExtraItems;   // ExtraInside: the files in the zip that aren't part of the game
+
+        public bool IsUnneeded { get { return Kind == FileKind.Duplicate || Kind == FileKind.NotInDat || Kind == FileKind.NotPreferred || Kind == FileKind.Excluded || Kind == FileKind.ExtraInside; } }
+        // The name as listed under Unneeded: a zip that's only there for its extra files says so, so it isn't mistaken for the ROM itself.
+        public string UnneededName
+        {
+            get
+            {
+                if (Kind != FileKind.ExtraInside || ExtraItems == null) return Name;
+                return Name + " (extra file" + (ExtraItems.Count == 1 ? "" : "s") + " in " + (Is7z ? ".7z" : "zip") + ")";
+            }
+        }
+        // Holds a whole game that counts as one you have.
+        public bool HoldsGame { get { return Game != null && (Kind == FileKind.Ok || IsFixable || Kind == FileKind.ExtraInside); } }
+        // The space deleting it frees: the whole file, or for ExtraInside just the extra files.
+        public long UnneededSize
+        {
+            get { return Kind == FileKind.ExtraInside && ExtraItems != null ? ExtraItems.Sum(i => i.CompressedSize > 0 ? i.CompressedSize : i.Size) : Length; }
+        }
         public bool IsFixable { get { return Kind == FileKind.Misnamed || Kind == FileKind.NotZipped; } }
         public bool IsProblem { get { return Kind == FileKind.Incomplete || Kind == FileKind.Mixed || Kind == FileKind.CueOutdated || Kind == FileKind.Unreadable || Kind == FileKind.Unsupported; } }
         public string TargetName { get { return TargetPath == null ? "" : RelativeTo(System.Folder, TargetPath); } }
@@ -1106,6 +1139,7 @@ namespace RomCheckOMatic
         public bool OneGame;
         public GameType Excluded;
         public List<string> IgnoredRegions = new List<string>();
+        public bool OwnRegions, OwnTypes;   // this system has its own regions / ROM types, not the collection's
         public CueIndex Cues;
         public int Total;
         public int Have;    // games present, counting ones that only need renaming
@@ -1126,6 +1160,26 @@ namespace RomCheckOMatic
         public CueIndex Cues;   // cue sheets from the cue sheet packs, for discs whose cue sheet is out of date
         public Dictionary<string, HashSet<string>> Ignore;   // DAT name -> files to keep anyway (your ignore list)
         public bool KeepPacks = true;   // TOSEC packs: fix inside them, or unpack them into one zip per game
+        public Dictionary<string, SystemOverride> Systems;   // DAT name -> that system's own regions or ROM types
+
+        // These options with a system's own settings in place of the collection's.
+        public ScanOptions With(SystemOverride own)
+        {
+            var o = (ScanOptions)MemberwiseClone();
+            if (own.RegionPriority != null) { o.RegionPriority = own.RegionPriority; o.IgnoredRegions = own.IgnoredRegions; }
+            if (own.Exclude.HasValue) o.Exclude = own.Exclude.Value;
+            return o;
+        }
+    }
+
+    // Regions or ROM types for one system only, such as every region for a system only ever sold in Japan.
+    // Either part can be left to the collection's settings (null).
+    class SystemOverride
+    {
+        public string RegionPriority;              // null: the collection's regions
+        public HashSet<string> IgnoredRegions;
+        public GameType? Exclude;                  // null: the collection's ROM types
+        public bool HasRegions { get { return RegionPriority != null; } }
     }
 
     static class Scanner
@@ -1176,6 +1230,17 @@ namespace RomCheckOMatic
             }
             sys.Dat = index.Find(sys.FolderName, manual);
             if (sys.Dat == null) { sys.Error = "No DAT found for this folder"; return sys; }
+
+            // The system's own regions or ROM types, if it has them, in place of the collection's.
+            SystemOverride own;
+            if (options.Systems != null && options.Systems.TryGetValue(sys.Dat.Name, out own))
+            {
+                options = options.With(own);
+                sys.OwnRegions = own.HasRegions;
+                sys.OwnTypes = own.Exclude.HasValue;
+                sys.Excluded = options.Exclude;
+                sys.IgnoredRegions = options.IgnoredRegions.OrderBy(r => r).ToList();
+            }
 
             DatFile dat;
             try { dat = index.Load(sys.Dat); sys.ExtraDats.AddRange(dat.Extras); }
@@ -1600,6 +1665,22 @@ namespace RomCheckOMatic
                     bool zipName = !string.Equals(f.TargetPath, f.Path, StringComparison.Ordinal);
                     int extra = f.Items.Count - g.Roms.Count;
                     bool innerNames = g.Roms.Any(r => !f.Items.Any(i => SameData(i, r) && i.Name == ExpectedName(r, i)));
+                    if (!zipName && !innerNames && extra > 0)
+                    {
+                        // Named right, with the game's files named right: only the extra files are unneeded.
+                        // Delete Unneeded takes them out of the zip and keeps the game.
+                        f.Kind = FileKind.ExtraInside;
+                        var used = new HashSet<ZipItem>();
+                        foreach (var r in g.Roms)
+                            used.Add(f.Items.First(i => !used.Contains(i) && SameData(i, r) && i.Name == ExpectedName(r, i)));
+                        f.ExtraItems = f.Items.Where(i => !used.Contains(i)).ToList();
+                        var names = f.ExtraItems.Take(3).Select(i => i.Name).ToList();
+                        if (f.ExtraItems.Count > 3) names.Add("and " + (f.ExtraItems.Count - 3) + " more");
+                        f.Detail = f.ExtraItems.Count + " extra file" + (f.ExtraItems.Count == 1 ? "" : "s") + " inside (" + string.Join(", ", names) +
+                                   "): taken out of the " + what.ToLower() + ", and the ROM kept";
+                        if (g.BadDump) f.Detail += " (the DAT marks this as a bad dump)";
+                        continue;
+                    }
                     var parts = new List<string>();
                     if (zipName && innerNames) parts.Add(what + " and the file inside renamed");
                     else if (zipName) parts.Add(what + " renamed");
@@ -1738,7 +1819,7 @@ namespace RomCheckOMatic
         // Gives the file its DAT name (and the file inside the zip). Returns null on success, or what went wrong.
         public static string Fix(FileResult f)
         {
-            if (!f.IsFixable || f.Game == null) return "Nothing to fix";
+            if (!(f.IsFixable || f.Kind == FileKind.ExtraInside) || f.Game == null) return "Nothing to fix";
             if (f.InPack) return "Games in a TOSEC pack are changed a whole pack at a time";
             if (f.IsFolder || f.LooseChd) return FixChd(f);
             string target = f.TargetPath;
@@ -2012,6 +2093,7 @@ namespace RomCheckOMatic
         public static string Delete(FileResult f)
         {
             if (f.InPack) return "Games in a TOSEC pack are changed a whole pack at a time";
+            if (f.Kind == FileKind.ExtraInside) return Fix(f);   // only the extra files go: the zip is rewritten without them, and checked
             return DeleteFile(f);
         }
 
@@ -2229,14 +2311,23 @@ namespace RomCheckOMatic
                 if (s.Error != null) { sb.AppendLine("  " + s.Error); sb.AppendLine(); continue; }
                 sb.AppendLine("  DAT: " + s.DatText);
                 sb.AppendLine();
-                if (s.Excluded != GameType.None) { sb.AppendLine("  Excluded ROM types: " + GameTypes.Describe(s.Excluded)); sb.AppendLine(); }
-                if (s.IgnoredRegions.Count > 0) { sb.AppendLine("  Excluded ROM regions: " + string.Join(", ", s.IgnoredRegions)); sb.AppendLine(); }
+                const string own = "  (this system's own setting)";
+                if (s.Excluded != GameType.None || s.OwnTypes)
+                {
+                    sb.AppendLine("  Excluded ROM types: " + (s.Excluded == GameType.None ? "none" : GameTypes.Describe(s.Excluded)) + (s.OwnTypes ? own : ""));
+                    sb.AppendLine();
+                }
+                if (s.IgnoredRegions.Count > 0 || s.OwnRegions)
+                {
+                    sb.AppendLine("  Excluded ROM regions: " + (s.IgnoredRegions.Count == 0 ? "none" : string.Join(", ", s.IgnoredRegions)) + (s.OwnRegions ? own : ""));
+                    sb.AppendLine();
+                }
                 sb.AppendLine("  Have " + s.Have + " of " + s.Total + (s.OneGame ? " titles (1G1R)" : " ROMs") +
                               ", missing " + s.MissingCount + " (plus " + s.MiaCount + " MIA)");
                 Section(sb, "Missing", s.Missing.Where(g => includeMia || !g.Mia).Select(g => g.Name + (g.Mia ? "  [MIA]" : "") +
                     (s.MissingNote.ContainsKey(g) ? "  (" + s.MissingNote[g] + ")" : "")));
                 Section(sb, "Incorrectly named", s.Files.Where(f => f.IsFixable).Select(f => f.Name + "  ->  " + f.TargetName + "  (" + f.Detail + ")"));
-                Section(sb, "Unneeded", s.Files.Where(f => f.IsUnneeded).Select(f => f.Name + "  (" + f.Detail + ")"));
+                Section(sb, "Unneeded", s.Files.Where(f => f.IsUnneeded).Select(f => f.UnneededName + "  (" + f.Detail + ")"));
                 Section(sb, "Problems", s.Files.Where(f => f.IsProblem).Select(f => f.Name + "  (" + f.Detail + ")"));
                 Section(sb, "Not in the DAT but kept", s.Files.Where(f => f.Kind == FileKind.Kept).Select(f => f.Name));
                 sb.AppendLine();

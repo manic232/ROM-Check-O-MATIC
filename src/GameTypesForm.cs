@@ -11,6 +11,7 @@ namespace RomCheckOMatic
     class GameTypesForm : Form
     {
         public GameType Exclude;
+        public bool UseCollection;   // the system's own ROM types were removed: it uses the collection's again
 
         static string Example(GameType t)
         {
@@ -28,9 +29,10 @@ namespace RomCheckOMatic
             }
         }
 
-        public GameTypesForm(GameType exclude)
+        // system: set the ROM types for this system only (own: it already has its own).
+        public GameTypesForm(GameType exclude, string system = null, bool own = false)
         {
-            Text = "ROM Types";
+            Text = system == null ? "ROM Types" : "ROM Type Overrides for " + system;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Dpi;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -43,7 +45,8 @@ namespace RomCheckOMatic
             var heading = new Label
             {
                 AutoSize = true, MaximumSize = new Size(520, 0), Margin = new Padding(3, 0, 3, 10),
-                Text = "Keep these kinds of ROMs. ROMs you untick are listed as unneeded, and don't count as missing."
+                Text = (system == null ? "" : "These ROM types are for " + system + " only. Other systems keep the collection's ROM types.\n\n") +
+                       "Keep these kinds of ROMs. ROMs you untick are listed as unneeded, and don't count as missing."
             };
             layout.Controls.Add(heading, 0, 0);
             layout.SetColumnSpan(heading, 2);
@@ -94,6 +97,13 @@ namespace RomCheckOMatic
             buttons.Controls.Add(ok);
             buttons.Controls.Add(all);
             buttons.Controls.Add(gamesOnly);
+            if (own)
+            {
+                var shared = new Button { Text = "Use the Collection's ROM Types", AutoSize = true, MinimumSize = new Size(80, 0) };
+                shared.Click += (s, e) => { UseCollection = true; DialogResult = DialogResult.OK; };
+                Tips.Set(shared, "Removes this system's own ROM types, so it uses the same ones as the rest of the collection.");
+                buttons.Controls.Add(shared);
+            }
             layout.Controls.Add(buttons, 0, row);
             layout.SetColumnSpan(buttons, 2);
 

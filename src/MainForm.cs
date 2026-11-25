@@ -80,7 +80,29 @@ namespace RomCheckOMatic
 
     class MainForm : Form
     {
-        const string DownloadPage = "https://datomatic.no-intro.org/index.php?page=manager&download=1077";
+        // Where each kind of set's DATs are downloaded: the menu wording and the page.
+        static Tuple<string, string> DownloadPageFor(string source)
+        {
+            switch (source)
+            {
+                case "No-Intro": return Tuple.Create("No-Intro DAT Download Page", "https://datomatic.no-intro.org/index.php?page=download&op=daily");
+                case "Redump": return Tuple.Create("Redump DAT Download Page", "http://redump.org/downloads/");
+                case "TOSEC": return Tuple.Create("TOSEC DAT Download Page", "https://www.tosecdev.org/downloads");
+                case "MAME": return Tuple.Create("MAME DAT Download Page", "https://pleasuredome.github.io/pleasuredome/mame/index.html");
+                default: return null;
+            }
+        }
+
+        // Which site this collection's DATs come from, by the DATs themselves, or by the collection's name
+        // before any DATs are found.
+        string DatSource()
+        {
+            string source = index != null ? index.Source : null;
+            if (source != null) return source;
+            foreach (var name in new[] { "No-Intro", "Redump", "MAME", "TOSEC" })
+                if (settings.Collection.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0) return name;
+            return null;
+        }
 
         readonly Settings settings = new Settings();
         DatIndex index;
@@ -264,13 +286,10 @@ namespace RomCheckOMatic
             options.Controls.Add(datLabel);
             top.Controls.Add(options, 1, 5);
 
-            // Theme and Fit Columns, side by side at the right.
+            // Options, at the right.
             themeButton.Dock = DockStyle.None;
-            var fitButton = MakeButton("Fit Columns", (s, e) => FitColumns());
-            Tips.Set(fitButton, "Sizes the list columns to fit what's in them.\nWidths are remembered for each system.");
             var rightButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
             rightButtons.Controls.Add(themeButton);
-            rightButtons.Controls.Add(fitButton);
             top.Controls.Add(rightButtons, 2, 5);
             top.SetColumnSpan(rightButtons, 2);
 
@@ -286,7 +305,6 @@ namespace RomCheckOMatic
         void SetTips()
         {
             Tips.Enabled = settings.ShowTips;
-            systemList.ShowItemToolTips = settings.ShowTips;
             Tips.Set(collectionBox, "Which ROM set to work on: No-Intro, Redump, MAME, TOSEC or your own.\nEach collection has its own folders and settings. \"New collection...\" adds one.");
             Tips.Set(romBox, "The folder that holds this ROM set, with one subfolder per system.\nPress Enter to scan.");
             Tips.Set(romBrowse, "Choose the folder that holds this ROM set.");
@@ -352,7 +370,7 @@ namespace RomCheckOMatic
             systemList.Columns.Add("Wrong Name", 90, HorizontalAlignment.Right);
             systemList.Columns.Add("Unneeded", 70, HorizontalAlignment.Right);
             systemList.Columns.Add("Problems", 65, HorizontalAlignment.Right);
-            systemList.SelectedIndexChanged += (s, e) => { SwitchWidths(); RefreshRows(); };
+            systemList.SelectedIndexChanged += (s, e) => RefreshRows();
             systemList.MouseUp += (s, e) =>
             {
                 if (e.Button != MouseButtons.Right) return;
@@ -417,17 +435,40 @@ namespace RomCheckOMatic
         void BuildMenus()
         {
             datMenu = new ContextMenuStrip();
-            datMenu.Items.Add("Open the DAT-o-MATIC Download Page", null, (s, e) => OpenUrl(DownloadPage));
-            datMenu.Items.Add("Import a Downloaded Love Pack Zip...", null, async (s, e) => await ImportPackDialog());
-            datMenu.Items.Add(new ToolStripSeparator());
-            datMenu.Items.Add("Reload DAT Files", null, async (s, e) => await LoadDats());
-            datMenu.Items.Add("Show DAT Folder", null, (s, e) => OpenFolder(datBox.Text));
+            var downloadItem = new ToolStripMenuItem("DAT Download Page", null, (s, e) =>
+            {
+                var page = DownloadPageFor(DatSource());
+                if (page != null) OpenUrl(page.Item2);
+            });
+            datMenu.Items.Add(downloadItem);
+            var importItem = new ToolStripMenuItem("Import a Downloaded Love Pack Zip...", null, async (s, e) => await ImportPackDialog());
+            datMenu.Items.Add(importItem);
+            var downloadSeparator = new ToolStripSeparator();
+            datMenu.Items.Add(downloadSeparator);
+            Tips.Item(importItem, "Unpacks a No-Intro Love Pack zip you've downloaded into the DAT folder,\nthen offers to delete the older pack.");
+            Tips.Item(datMenu.Items.Add("Reload DAT Files", null, async (s, e) => await LoadDats()),
+                "Reads the DAT folder again, after you've added or replaced DATs.");
+            Tips.Item(datMenu.Items.Add("Show DAT Folder", null, (s, e) => OpenFolder(datBox.Text)),
+                "Opens the DAT folder in File Explorer.");
 
             datMenu.Items.Add(new ToolStripSeparator());
             var renameAllFromDatMenu = new ToolStripMenuItem("Rename System Folders with DAT Dates...", null, (s, e) => RenameFolders(FoldersToRename(results)));
+            Tips.Item(renameAllFromDatMenu, "Renames each system folder to its DAT's name and date, such as \"Sony - PlayStation (2026-06-15 11-55-46)\",\n" +
+                                            "so you can see which DAT each one was checked against. You see the list first.");
             datMenu.Items.Add(renameAllFromDatMenu);
             datMenu.Opening += (s, e) =>
             {
+                // Each set's DATs come from its own site; the Love Pack is No-Intro's.
+                string source = DatSource();
+                var page = DownloadPageFor(source);
+                downloadItem.Visible = page != null;
+                if (page != null)
+                {
+                    downloadItem.Text = page.Item1;
+                    downloadItem.ToolTipText = "Opens the page where " + source + "'s DATs are downloaded, in your web browser.";
+                }
+                importItem.Visible = source == "No-Intro";
+                downloadSeparator.Visible = downloadItem.Visible || importItem.Visible;
                 int n = FoldersToRename(results).Count;
                 renameAllFromDatMenu.Enabled = !busy && n > 0;
                 renameAllFromDatMenu.Text = "Rename System Folders with DAT Dates" + (n > 0 ? " (" + n + ")..." : "");
@@ -451,13 +492,39 @@ namespace RomCheckOMatic
                 var sys = SelectedSystem();
                 RenameFolders(sys != null ? FoldersToRename(new[] { sys }) : FoldersToRename(results));
             });
-            systemMenu.Items.AddRange(new ToolStripItem[] { chooseItem, rescanItem, showItem, renameSep, renameItem });
+            var ownSep = new ToolStripSeparator();
+            var ownRegionsItem = new ToolStripMenuItem("Region Overrides for This System...", null, (s, e) => EditSystemRegions(SelectedSystem()));
+            var ownTypesItem = new ToolStripMenuItem("ROM Type Overrides for This System...", null, (s, e) => EditSystemTypes(SelectedSystem()));
+            var ownRemoveItem = new ToolStripMenuItem("Remove This System's Overrides...", null, (s, e) => RemoveSystemOverrides(SelectedSystem()));
+            Tips.Item(chooseItem, "Picks which DAT this folder is checked against, for a folder the app\ncan't match by name. Choose \"Match automatically by folder name\" to undo it.");
+            Tips.Item(rescanItem, "Checks just this system again, such as after copying files into its folder.");
+            Tips.Item(showItem, "Opens the system's folder in File Explorer.");
+            Tips.Item(ownRegionsItem, "Gives this system its own regions in place of the collection's, such as\nkeeping Japan for a system only ever sold there. Ticked when it has them.");
+            Tips.Item(ownTypesItem, "Gives this system its own ROM types (betas, demos, BIOS files...)\nin place of the collection's. Ticked when it has them.");
+            Tips.Item(renameItem, "Renames the folder to its DAT's name and date, such as \"Sony - PlayStation (2026-06-15 11-55-46)\",\n" +
+                                  "so you can see which DAT it was checked against.");
+            systemMenu.Items.AddRange(new ToolStripItem[] { chooseItem, rescanItem, showItem, ownSep, ownRegionsItem, ownTypesItem, ownRemoveItem, renameSep, renameItem });
             systemMenu.Opening += (s, e) =>
             {
                 var sys = SelectedSystem();
                 bool all = sys == null;
                 if (all && systemList.SelectedItems.Count == 0) { e.Cancel = true; return; }
                 chooseItem.Visible = rescanItem.Visible = showItem.Visible = renameSep.Visible = !all;
+                // A tick shows the system has its own setting rather than the collection's.
+                ownSep.Visible = ownRegionsItem.Visible = ownTypesItem.Visible = !all;
+                ownRemoveItem.Visible = !all && (sys.OwnRegions || sys.OwnTypes);
+                if (!all)
+                {
+                    ownRegionsItem.Checked = sys.OwnRegions;
+                    ownTypesItem.Checked = sys.OwnTypes;
+                    ownRegionsItem.Enabled = ownTypesItem.Enabled = ownRemoveItem.Enabled = !busy && sys.Dat != null;
+                    // Only shown when the system has overrides; says which it will remove.
+                    ownRemoveItem.Text = sys.OwnRegions && sys.OwnTypes ? "Remove This System's Overrides..."
+                                       : sys.OwnRegions ? "Remove This System's Region Overrides..." : "Remove This System's ROM Type Overrides...";
+                    ownRemoveItem.ToolTipText = "Goes back to the collection's " +
+                        (sys.OwnRegions && sys.OwnTypes ? "regions and ROM types" : sys.OwnRegions ? "regions" : "ROM types") +
+                        " for this system, and checks it again. You're asked first.";
+                }
                 if (all)
                 {
                     int n = FoldersToRename(results).Count;
@@ -485,29 +552,60 @@ namespace RomCheckOMatic
             {
                 string value = choice[0];
                 var item = new ToolStripMenuItem(choice[1]) { Tag = value };
+                Tips.Item(item, value == "System" ? "Uses light or dark to match Windows' own setting, and follows it when it changes."
+                                                  : "Always uses the " + value.ToLower() + " theme.");
                 item.Click += (s, e) => { settings.Theme = value; ApplyTheme(); };
                 themeMenu.Items.Add(item);
                 themeItems.Add(item);
             }
             themeMenu.Items.Add(new ToolStripSeparator());
+            var fitItem = new ToolStripMenuItem("Fit Columns Automatically");
+            fitItem.Click += (s, e) =>
+            {
+                settings.AutoFitColumns = !settings.AutoFitColumns;
+                if (settings.AutoFitColumns) { settings.Ini.Write("Columns", null, null); FitSystemColumns(); FitTabColumns(); }
+                else SaveColumns();   // keep the widths as they are now
+            };
+            themeMenu.Items.Add(fitItem);
+            Tips.Item(fitItem, "Ticked: the list columns are sized to fit what's in them whenever the lists change.\n" +
+                               "Unticked: columns stay the width you drag them to, and the app remembers them.");
             var tipsItem = new ToolStripMenuItem("Show Pop-up Tips");
             tipsItem.Click += (s, e) => { settings.ShowTips = !settings.ShowTips; SetTips(); };
             themeMenu.Items.Add(tipsItem);
             var recycleItem = new ToolStripMenuItem("Delete to the Recycle Bin");
             recycleItem.Click += (s, e) => { settings.UseRecycleBin = !settings.UseRecycleBin; Fixer.UseRecycleBin = settings.UseRecycleBin; };
             themeMenu.Items.Add(recycleItem);
+            var removeItem = new ToolStripMenuItem("Remove Downloads Once Their ROMs Are Added");
+            removeItem.Click += (s, e) => { settings.RemoveDownloads = !settings.RemoveDownloads; };
+            themeMenu.Items.Add(removeItem);
+            var awakeItem = new ToolStripMenuItem("Keep the PC Awake During Long Jobs");
+            awakeItem.Click += (s, e) => { settings.KeepAwake = !settings.KeepAwake; if (busy) Awake.Set(settings.KeepAwake); };
+            themeMenu.Items.Add(awakeItem);
             themeMenu.Items.Add(new ToolStripSeparator());
             var updatesItem = new ToolStripMenuItem("Check for Updates When the App Opens");
             updatesItem.Click += (s, e) => { settings.CheckUpdates = !settings.CheckUpdates; if (settings.CheckUpdates) CheckForUpdate(false); };
             themeMenu.Items.Add(updatesItem);
-            themeMenu.Items.Add("Check for Updates Now", null, (s, e) => CheckForUpdate(true));
+            Tips.Item(themeMenu.Items.Add("Check for Updates Now", null, (s, e) => CheckForUpdate(true)),
+                "Asks GitHub now whether there's a newer version, and offers to open its download page.");
+            Tips.Item(tipsItem, "Shows a short explanation like this one when the mouse rests on a button, box or menu item.");
+            Tips.Item(recycleItem, "Ticked: deleted files go to the Recycle Bin, so you can get them back.\nUnticked: they're deleted outright.");
+            Tips.Item(removeItem, "Ticked: a download is deleted from the missing ROMs folder once its ROMs are safely in your set.\n" +
+                                  "Unticked: downloads are left where they are. Downloads holding other files too are always kept.");
+            Tips.Item(awakeItem, "Ticked: the PC won't go to sleep while a scan, fix, delete or add is running.\n" +
+                                 "The screen can still turn off. Normal sleep settings return when the job ends.");
+            Tips.Item(updatesItem,"Checks GitHub for a newer version each time the app opens.\nEach new version is only mentioned once.");
             themeMenu.Opening += (s, e) =>
             {
                 foreach (var item in themeItems) item.Checked = (string)item.Tag == settings.Theme;
+                fitItem.Checked = settings.AutoFitColumns;
                 tipsItem.Checked = settings.ShowTips;
                 recycleItem.Checked = settings.UseRecycleBin;
+                removeItem.Checked = settings.RemoveDownloads;
+                awakeItem.Checked = settings.KeepAwake;
                 updatesItem.Checked = settings.CheckUpdates;
             };
+
+            foreach (var m in new ToolStrip[] { datMenu, systemMenu, listMenu, themeMenu }) Tips.Menu(m);
         }
 
         // ------------------------------------------------------------ updates
@@ -622,19 +720,8 @@ namespace RomCheckOMatic
                 { "Unneeded", unneededList }, { "Problems", problemList }, { "Correct", okList } };
         }
 
-        // The five tabs keep their column widths per system ("Missing@Sega - Mega Drive - Genesis"),
-        // and for All systems ("Missing"). The system list on the left has one set.
-        string widthScope = "";        // "" = All systems
-        bool switchingSystems;         // true while the system list is being refilled
-
-        string ScopeKey()
-        {
-            var s = SelectedSystem();
-            return s == null ? "" : (s.Dat != null ? s.Dat.Name : s.FolderName);
-        }
-
-        static string WidthKey(string list, string scope) { return scope.Length == 0 ? list : list + "@" + scope; }
-
+        // With Options > Fit Columns Automatically on, every list is sized to fit whenever it changes, and no
+        // widths are saved. With it off, columns stay where they're dragged: one set of widths per list.
         void SaveWidths(string key, ListView lv)
         {
             settings.Ini.Write("Columns", key, string.Join(",", lv.Columns.Cast<ColumnHeader>().Select(c => c.Width)));
@@ -656,41 +743,33 @@ namespace RomCheckOMatic
 
         void SaveColumns()
         {
-            foreach (var kv in ColumnLists())
-                SaveWidths(kv.Value == systemList ? kv.Key : WidthKey(kv.Key, widthScope), kv.Value);
+            if (settings.AutoFitColumns) return;
+            foreach (var kv in ColumnLists()) SaveWidths(kv.Key, kv.Value);
         }
 
         void RestoreColumns()
         {
+            // Older versions kept a set of widths for every system ("Missing@Sega - Mega Drive - Genesis"): clear those out.
+            foreach (var key in settings.Ini.Keys("Columns").Where(k => k.Contains("@"))) settings.Ini.Write("Columns", key, null);
+            if (settings.AutoFitColumns) { settings.Ini.Write("Columns", null, null); return; }
             foreach (var kv in ColumnLists()) RestoreWidths(kv.Key, kv.Value);
         }
 
-        // Called when a different system is selected: keep the widths of the one being left,
-        // and bring back the ones saved for the new one.
-        void SwitchWidths()
-        {
-            if (switchingSystems) return;
-            string scope = ScopeKey();
-            if (scope == widthScope) return;
-            foreach (var kv in ColumnLists().Where(kv => kv.Value != systemList))
-            {
-                SaveWidths(WidthKey(kv.Key, widthScope), kv.Value);
-                RestoreWidths(WidthKey(kv.Key, scope), kv.Value);
-            }
-            widthScope = scope;
-        }
-
-        // Sizes every column to its widest entry, in the system list and all five tabs,
-        // and widens the left panel so the system list fits.
-        void FitColumns()
+        // Sizes the system list's columns to fit, and widens the left panel if the list doesn't fit in it
+        // (it's never made narrower, so it stays where you put it).
+        void FitSystemColumns()
         {
             Fit(systemList, systemList.Items.Cast<ListViewItem>()
                 .Select(i => Tuple.Create(i.SubItems.Cast<ListViewItem.ListViewSubItem>().Select(x => x.Text).ToArray(), i.Font ?? systemList.Font)));
+            int wanted = systemList.Columns.Cast<ColumnHeader>().Sum(c => c.Width) + SystemInformation.VerticalScrollBarWidth + 8;
+            try { if (wanted > split.SplitterDistance) split.SplitterDistance = Math.Max(200, Math.Min(wanted, (int)(split.Width * 0.6))); } catch { }
+        }
+
+        // Sizes the five tabs' columns to fit what's in them.
+        void FitTabColumns()
+        {
             foreach (var list in new[] { missingList, misnamedList, unneededList, problemList, okList })
                 Fit(list, list.Rows.Select(r => Tuple.Create(r.Cells, list.Font)));
-
-            int wanted = systemList.Columns.Cast<ColumnHeader>().Sum(c => c.Width) + SystemInformation.VerticalScrollBarWidth + 8;
-            try { split.SplitterDistance = Math.Max(200, Math.Min(wanted, (int)(split.Width * 0.6))); } catch { }
         }
 
         static void Fit(ListView lv, IEnumerable<Tuple<string[], Font>> rows)
@@ -702,13 +781,25 @@ namespace RomCheckOMatic
             var widths = new int[n];
             for (int i = 0; i < n; i++) widths[i] = TextRenderer.MeasureText(lv.Columns[i].Text, lv.Font).Width;
             // Measuring every row of a big list is slow, so measure the longest few texts in each column:
-            // with a proportional font the widest is almost always among them.
+            // with a proportional font the widest is almost always among them. A count of the text lengths finds
+            // them in one pass (no sorting), so this stays quick while typing in the filter box.
             for (int i = 0; i < n; i++)
             {
-                int col = i;
-                foreach (var r in all.Where(r => col < r.Item1.Length && r.Item1[col] != null)
-                                     .OrderByDescending(r => r.Item1[col].Length).Take(60))
+                int col = i, longest = 0;
+                foreach (var r in all) if (col < r.Item1.Length && r.Item1[col] != null) longest = Math.Max(longest, r.Item1[col].Length);
+                var count = new int[longest + 1];
+                foreach (var r in all) if (col < r.Item1.Length && r.Item1[col] != null) count[r.Item1[col].Length]++;
+                int from = longest, seen = 0;
+                while (from > 0 && seen + count[from] < 60) seen += count[from--];
+                // Every text longer than "from" (fewer than 60 of them), then some of those exactly that long.
+                int sameLength = 0;
+                foreach (var r in all)
+                {
+                    if (col >= r.Item1.Length || r.Item1[col] == null) continue;
+                    int len = r.Item1[col].Length;
+                    if (len < from || (len == from && ++sameLength > 60)) continue;
                     widths[i] = Math.Max(widths[i], TextRenderer.MeasureText(r.Item1[col], r.Item2).Width);
+                }
             }
             lv.BeginUpdate();
             for (int i = 0; i < n; i++) lv.Columns[i].Width = widths[i] + 20;   // room for the padding either side
@@ -820,6 +911,7 @@ namespace RomCheckOMatic
             foreach (var m in new[] { listMenu, systemMenu, datMenu, themeMenu }) Theme.Menu(m);
             ResumeLayout();
             RefreshSystems();
+            ColourTabs();   // the theme just reset the tabs' text colour
             Invalidate(true);
         }
 
@@ -902,6 +994,7 @@ namespace RomCheckOMatic
         void SetBusy(bool on)
         {
             busy = on;
+            Awake.Set(on && settings.KeepAwake);
             scanButton.Text = on ? "Stop" : "Scan";
             foreach (Control c in new Control[] { romBox, datBox, dlBox, cueBox, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, oneGameBox, typesButton, fixButton, deleteButton, addButton, autoBox, keepPacksBox, exportButton })
                 c.Enabled = !on;
@@ -1064,6 +1157,52 @@ namespace RomCheckOMatic
             }
             var folder = sys.Folder;
             var unused = Rescan(new[] { folder });
+        }
+
+        // Regions for one system only, such as every region for a system only ever sold in Japan.
+        void EditSystemRegions(SystemResult sys)
+        {
+            if (sys == null || sys.Dat == null) return;
+            SystemOverride own;
+            settings.SystemOverrides().TryGetValue(sys.Dat.Name, out own);
+            bool has = own != null && own.HasRegions;
+            string order = has ? own.RegionPriority : settings.Regions;
+            string ignored = has ? string.Join(", ", own.IgnoredRegions) : settings.IgnoredRegions;
+            using (var d = new RegionForm(order, ignored, sys.FolderName, has))
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                if (d.UseCollection) settings.SetSystemRegions(sys.Dat.Name, null, null);
+                else settings.SetSystemRegions(sys.Dat.Name, d.Order, d.Ignored);
+            }
+            var unused = Rescan(new[] { sys.Folder });
+        }
+
+        // Takes away the system's own regions and ROM types, so it uses the collection's again.
+        void RemoveSystemOverrides(SystemResult sys)
+        {
+            if (sys == null || sys.Dat == null || busy || !(sys.OwnRegions || sys.OwnTypes)) return;
+            string what = sys.OwnRegions && sys.OwnTypes ? "region and ROM type overrides" : sys.OwnRegions ? "region overrides" : "ROM type overrides";
+            string back = sys.OwnRegions && sys.OwnTypes ? "regions and ROM types" : sys.OwnRegions ? "regions" : "ROM types";
+            if (ThemedBox.Show(this, "Remove the " + what + " for " + sys.FolderName + "?\n\nIt will use the collection's " + back + " again.",
+                               Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            if (sys.OwnRegions) settings.SetSystemRegions(sys.Dat.Name, null, null);
+            if (sys.OwnTypes) settings.SetSystemTypes(sys.Dat.Name, null);
+            Log.Write("Removed the " + what + " for " + sys.Dat.Name);
+            var unused = Rescan(new[] { sys.Folder });
+        }
+
+        void EditSystemTypes(SystemResult sys)
+        {
+            if (sys == null || sys.Dat == null) return;
+            SystemOverride own;
+            settings.SystemOverrides().TryGetValue(sys.Dat.Name, out own);
+            bool has = own != null && own.Exclude.HasValue;
+            using (var d = new GameTypesForm(has ? own.Exclude.Value : settings.Exclude, sys.FolderName, has))
+            {
+                if (d.ShowDialog(this) != DialogResult.OK) return;
+                settings.SetSystemTypes(sys.Dat.Name, d.UseCollection ? (GameType?)null : d.Exclude);
+            }
+            var unused = Rescan(new[] { sys.Folder });
         }
 
         void EditRegions()
@@ -1270,7 +1409,6 @@ namespace RomCheckOMatic
         {
             var selected = SelectedSystem();
             string selectedFolder = selected != null ? selected.Folder : null;
-            switchingSystems = true;   // refilling the list briefly clears the selection; don't swap widths for that
             systemList.BeginUpdate();
             systemList.Items.Clear();
             if (results.Count > 0)
@@ -1283,7 +1421,7 @@ namespace RomCheckOMatic
                     results.Sum(s => s.Count(f => f.IsUnneeded)).ToString(),
                     (results.Sum(s => s.Count(f => f.IsProblem)) + results.Count(s => s.Error != null)).ToString() });
                 all.Font = new Font(systemList.Font, FontStyle.Bold);
-                all.ForeColor = StatusColour(all);
+                StatusColours(all);
                 systemList.Items.Add(all);
             }
             foreach (var s in results)
@@ -1299,29 +1437,43 @@ namespace RomCheckOMatic
                     item = new ListViewItem(new[] {
                         s.FolderName, s.Have + " / " + s.Total, s.MissingCount.ToString(), s.Count(f => f.IsFixable).ToString(),
                         s.Count(f => f.IsUnneeded).ToString(), s.Count(f => f.IsProblem).ToString() });
-                    item.ToolTipText = "DAT: " + s.DatText.Replace(" + ", "\n     + ");
-                    item.ForeColor = StatusColour(item);
+                    StatusColours(item);
                 }
                 item.Tag = s;
                 systemList.Items.Add(item);
                 if (selectedFolder != null && SamePath(s.Folder, selectedFolder)) item.Selected = true;
             }
-            systemList.ShowItemToolTips = settings.ShowTips;
             systemList.EndUpdate();
-            switchingSystems = false;
-            SwitchWidths();   // in case the selected system really did change (e.g. its folder was renamed away)
+            if (settings.AutoFitColumns) FitSystemColumns();
         }
 
-        // Green when the Missing, Wrong Name, Unneeded and Problems columns are all 0, red otherwise.
-        static Color StatusColour(ListViewItem item)
+        // Each count is green when it's 0 and red when it isn't. Have goes with Missing, and the system's
+        // name is red if anything at all needs doing, so problem systems still stand out in a long list.
+        static void StatusColours(ListViewItem item)
         {
+            item.UseItemStyleForSubItems = false;
             bool clean = true;
             for (int i = 2; i <= 5 && i < item.SubItems.Count; i++)
             {
                 int n;
-                if (int.TryParse(item.SubItems[i].Text, out n) && n > 0) clean = false;
+                bool bad = int.TryParse(item.SubItems[i].Text, out n) && n > 0;
+                item.SubItems[i].ForeColor = bad ? Theme.Current.Bad : Theme.Current.Good;
+                if (bad) clean = false;
             }
-            return clean ? Theme.Current.Good : Theme.Current.Bad;
+            if (item.SubItems.Count > 2) item.SubItems[1].ForeColor = item.SubItems[2].ForeColor;
+            item.ForeColor = item.SubItems[0].ForeColor = clean ? Theme.Current.Good : Theme.Current.Bad;
+        }
+
+        // The tab titles follow the same rule: Missing (0) in green, Missing (3) in red. Correct stays plain,
+        // and so does everything before the first scan.
+        int[] tabTotals;
+
+        void ColourTabs()
+        {
+            var tabsToColour = new[] { missingTab, misnamedTab, unneededTab, problemTab };
+            for (int i = 0; i < tabsToColour.Length; i++)
+                tabsToColour[i].ForeColor = tabTotals == null || results.Count == 0 ? Theme.Current.Text
+                                          : tabTotals[i] > 0 ? Theme.Current.Bad : Theme.Current.Good;
         }
 
         static string Sys(SystemResult s)
@@ -1357,7 +1509,7 @@ namespace RomCheckOMatic
                 foreach (var f in s.Files)
                 {
                     if (f.IsFixable) misnamed.Add(new Row { System = s, File = f, Cells = new[] { Sys(s), CurrentName(f), CorrectName(f), f.Detail } });
-                    else if (f.IsUnneeded) unneeded.Add(new Row { System = s, File = f, Size = f.Length, Cells = new[] { Sys(s), f.Name, Naming.Size(f.Length), f.Detail } });
+                    else if (f.IsUnneeded) unneeded.Add(new Row { System = s, File = f, Size = f.UnneededSize, Cells = new[] { Sys(s), f.UnneededName, Naming.Size(f.UnneededSize), f.Detail } });
                     else if (f.IsProblem || f.Kind == FileKind.Mixed) problems.Add(new Row { System = s, File = f, Cells = new[] { Sys(s), f.Name, f.Detail } });
                     else if (f.Kind == FileKind.Ok || f.Kind == FileKind.Kept) ok.Add(new Row { System = s, File = f, Cells = new[] { Sys(s), f.Name, f.Detail } });
                 }
@@ -1374,6 +1526,9 @@ namespace RomCheckOMatic
             unneededTab.Text = "Unneeded (" + count(unneededList.Rows.Count, unneeded.Count) + ")";
             problemTab.Text = "Problems (" + count(problemList.Rows.Count, problems.Count) + ")";
             okTab.Text = "Correct (" + count(okList.Rows.Count, ok.Count) + ")";
+            tabTotals = new[] { missing.Count, misnamed.Count, unneeded.Count, problems.Count };
+            ColourTabs();
+            if (settings.AutoFitColumns) FitTabColumns();
             UpdateButtons();
         }
 
@@ -1384,7 +1539,7 @@ namespace RomCheckOMatic
             var del = ScopeFiles(f => f.IsUnneeded && f.CanChange);
             string where = SelectedSystem() != null ? " in This System" : "";
             fixButton.Text = "Fix Wrong Names" + where + " (" + fix.ToString("N0") + ")";
-            deleteButton.Text = "Delete Unneeded" + where + " (" + del.Count.ToString("N0") + (del.Count > 0 ? ", " + Naming.Size(del.Sum(f => f.Length)) : "") + ")";
+            deleteButton.Text = "Delete Unneeded" + where + " (" + del.Count.ToString("N0") + (del.Count > 0 ? ", " + Naming.Size(del.Sum(f => f.UnneededSize)) : "") + ")";
             fixButton.Enabled = fix > 0;
             deleteButton.Enabled = del.Count > 0;
             exportButton.Enabled = results.Count > 0;
@@ -1415,34 +1570,46 @@ namespace RomCheckOMatic
             listMenu.Items.Clear();
             var fixable = files.Where(f => f.IsFixable && f.CanChange).ToList();
             var deletable = files.Where(f => f.Kind != FileKind.Ok && !f.IsFixable && f.CanChange).ToList();
-            if (fixable.Count > 0) listMenu.Items.Add("Rename " + Plural(fixable.Count, "Selected File"), null, (s, e) => FixFiles(fixable));
-            if (deletable.Count > 0) listMenu.Items.Add("Delete " + Plural(deletable.Count, "Selected File") + "...", null, (s, e) => DeleteFiles(deletable));
+            if (fixable.Count > 0)
+                Tips.Item(listMenu.Items.Add("Rename " + Plural(fixable.Count, "Selected File"), null, (s, e) => FixFiles(fixable)),
+                    "Gives the selected files their names from the DAT, and zips loose ROMs.");
+            if (deletable.Count > 0)
+                Tips.Item(listMenu.Items.Add("Delete " + Plural(deletable.Count, "Selected File") + "...", null, (s, e) => DeleteFiles(deletable)),
+                    "Deletes the selected files" + (settings.UseRecycleBin ? " (to the Recycle Bin)" : "") + ". You're asked first.");
             var ignorable = files.Where(f => (f.IsUnneeded || f.IsProblem) && f.System != null && f.System.Dat != null).ToList();
             var ignored = files.Where(f => f.OnIgnoreList && f.System != null && f.System.Dat != null).ToList();
             if (ignorable.Count > 0)
-                listMenu.Items.Add(ignorable.Count == 1 ? "Add to Ignore List (Always Keep)" : "Add " + Plural(ignorable.Count, "Selected File") + " to Ignore List (Always Keep)",
-                                   null, (s, e) => SetIgnored(ignorable, true));
+                Tips.Item(listMenu.Items.Add(ignorable.Count == 1 ? "Add to Ignore List (Always Keep)" : "Add " + Plural(ignorable.Count, "Selected File") + " to Ignore List (Always Keep)",
+                                             null, (s, e) => SetIgnored(ignorable, true)),
+                    "Keeps these files for good, such as a translation guide: they're no longer\nlisted as unneeded, and are never deleted.");
             if (ignored.Count > 0)
-                listMenu.Items.Add(ignored.Count == 1 ? "Remove from Ignore List" : "Remove " + Plural(ignored.Count, "Selected File") + " from Ignore List",
-                                   null, (s, e) => SetIgnored(ignored, false));
+                Tips.Item(listMenu.Items.Add(ignored.Count == 1 ? "Remove from Ignore List" : "Remove " + Plural(ignored.Count, "Selected File") + " from Ignore List",
+                                             null, (s, e) => SetIgnored(ignored, false)),
+                    "Takes these files off the ignore list, so they're checked like any other file again.");
             if (listMenu.Items.Count > 0) listMenu.Items.Add(new ToolStripSeparator());
-            listMenu.Items.Add("Show in Folder", null, (s, e) => ShowInFolder(rows[0]));
-            listMenu.Items.Add("Copy Names", null, (s, e) => CopyNames(list));
+            Tips.Item(listMenu.Items.Add("Show in Folder", null, (s, e) => ShowInFolder(rows[0])),
+                "Opens the folder in File Explorer, with the file selected.");
+            Tips.Item(listMenu.Items.Add("Copy Names", null, (s, e) => CopyNames(list)),
+                "Copies the names of the selected rows, one per line, to paste elsewhere.");
             if (rows[0].Game != null)
-                listMenu.Items.Add("Copy CRC32", null, (s, e) =>
+                Tips.Item(listMenu.Items.Add("Copy CRC32", null, (s, e) =>
                 {
                     var text = string.Join(Environment.NewLine, list.SelectedRows().Where(r => r.Game != null).Select(r => Crcs(r.Game)));
                     if (text.Length > 0) Clipboard.SetText(text);
-                });
-            if (rows[0].Game != null) listMenu.Items.Add("Search the Web for This ROM", null, (s, e) => OpenUrl("https://www.google.com/search?q=" + Uri.EscapeDataString(rows[0].Game.Name)));
+                }), "Copies the CRC32 checksums the DAT gives for the selected ROMs,\nhandy for checking a download is the right one.");
+            if (rows[0].Game != null)
+                Tips.Item(listMenu.Items.Add("Search the Web for This ROM", null, (s, e) => OpenUrl("https://www.google.com/search?q=" + Uri.EscapeDataString(rows[0].Game.Name))),
+                    "Searches Google for the ROM's name, in your web browser.");
             // Aftermarket (homebrew) games are usually sold or given away by their developers, mostly on itch.io.
             if (rows[0].Game != null && (rows[0].Game.Type & GameType.Aftermarket) != 0)
             {
                 string title = Title(rows[0].Game.Name), system = SystemWords(rows[0].System);
                 listMenu.Items.Add(new ToolStripSeparator());
-                listMenu.Items.Add("Find on itch.io", null, (s, e) => OpenUrl("https://itch.io/search?q=" + Uri.EscapeDataString(title)));
-                listMenu.Items.Add("Search for the Developer's Page", null, (s, e) =>
-                    OpenUrl("https://www.google.com/search?q=" + Uri.EscapeDataString("\"" + title + "\" " + system + " homebrew developer")));
+                Tips.Item(listMenu.Items.Add("Find on itch.io", null, (s, e) => OpenUrl("https://itch.io/search?q=" + Uri.EscapeDataString(title))),
+                    "Searches itch.io, where most homebrew games are sold or given away by their developers.");
+                Tips.Item(listMenu.Items.Add("Search for the Developer's Page", null, (s, e) =>
+                    OpenUrl("https://www.google.com/search?q=" + Uri.EscapeDataString("\"" + title + "\" " + system + " homebrew developer"))),
+                    "Searches Google for the developer of this homebrew game, to buy or download it from them.");
             }
             foreach (ToolStripItem i in listMenu.Items) i.Enabled = !busy || i is ToolStripSeparator;
             listMenu.Show(list, at);
@@ -1525,7 +1692,7 @@ namespace RomCheckOMatic
         {
             var rows = list.SelectedRows();
             if (rows.Count == 0) rows = list.Rows;
-            var text = string.Join(Environment.NewLine, rows.Select(r => r.Game != null ? r.Game.Name : r.Cells[1]));
+            var text = string.Join(Environment.NewLine, rows.Select(r => r.Game != null ? r.Game.Name : r.File != null && r.File.Kind == FileKind.ExtraInside ? r.File.Name : r.Cells[1]));
             if (text.Length > 0) Clipboard.SetText(text);
         }
 
@@ -1593,14 +1760,26 @@ namespace RomCheckOMatic
         async void DeleteFiles(List<FileResult> files)
         {
             if (busy || files.Count == 0) return;
-            long size = files.Sum(f => f.Length);
-            var kinds = files.GroupBy(f => f.Kind).Select(g => g.Count().ToString("N0") + " " + KindText(g.Key, g.Count())).ToList();
+            // Whole files, and zips that keep their ROM and only lose the extra files inside.
+            var whole = files.Where(f => f.Kind != FileKind.ExtraInside).ToList();
+            var inside = files.Where(f => f.Kind == FileKind.ExtraInside).ToList();
+            long size = whole.Sum(f => f.Length);
+            var kinds = whole.GroupBy(f => f.Kind).Select(g => g.Count().ToString("N0") + " " + KindText(g.Key, g.Count())).ToList();
             bool recycle = settings.UseRecycleBin;
-            string msg = (recycle ? "Move " + Count(files.Count, "file") + " (" + Naming.Size(size) + ") to the Recycle Bin?\n\n"
-                                  : "Permanently delete " + Count(files.Count, "file") + " (" + Naming.Size(size) + ")?\n\n") +
-                         string.Join("\n", kinds) +
-                         (recycle ? "\n\nIf Windows can't recycle something (too big, or on a network drive), it asks before deleting it permanently."
-                                  : "\n\nThis can't be undone. (To use the Recycle Bin instead, tick Options > Delete to the Recycle Bin.)");
+            string msg = "";
+            if (whole.Count > 0)
+                msg = (recycle ? "Move " + Count(whole.Count, "file") + " (" + Naming.Size(size) + ") to the Recycle Bin?\n\n"
+                               : "Permanently delete " + Count(whole.Count, "file") + " (" + Naming.Size(size) + ")?\n\n") +
+                      string.Join("\n", kinds) +
+                      (recycle ? "\n\nIf Windows can't recycle something (too big, or on a network drive), it asks before deleting it permanently."
+                               : "\n\nThis can't be undone. (To use the Recycle Bin instead, tick Options > Delete to the Recycle Bin.)");
+            if (inside.Count > 0)
+            {
+                int extras = inside.Sum(f => f.ExtraItems == null ? 0 : f.ExtraItems.Count);
+                msg += (whole.Count > 0 ? "\n\nAlso take " : "Take ") + Count(extras, "extra file") + " (" + Naming.Size(inside.Sum(f => f.UnneededSize)) + ") out of " +
+                       Count(inside.Count, "zip") + (whole.Count > 0 ? "." : "?") + " The ROMs in them are kept, and each zip is checked against the DAT afterwards. " +
+                       "Files taken out of a zip are deleted outright: they don't go to the Recycle Bin.";
+            }
             var packs = files.Where(f => f.InPack).Select(f => f.System).Distinct().ToList();
             if (packs.Count > 0)
                 msg += "\n\nGames inside " + Count(packs.Count, "TOSEC pack") + " are taken out by rewriting the pack (" +
@@ -1620,7 +1799,7 @@ namespace RomCheckOMatic
             catch (OperationCanceledException) { lines.Add("Stopped part way."); }
             finally { SetBusy(false); }
             await Rescan(files.Select(f => f.System.Folder));
-            ShowOutcome("Delete", lines);
+            ShowOutcome("Delete", lines, files);
         }
 
         static string KindText(FileKind k, int n)
@@ -1635,15 +1814,29 @@ namespace RomCheckOMatic
                 case FileKind.Unsupported: return "not a .zip";
                 case FileKind.Incomplete: return "incomplete";
                 case FileKind.Mixed: return "holding more than one ROM";
+                case FileKind.ExtraInside: return "with extra files inside";
                 default: return k.ToString();
             }
         }
 
-        void ShowOutcome(string what, List<string> lines)
+        // files: what was deleted, so zips that only lost their extra files are counted by those files.
+        void ShowOutcome(string what, List<string> lines, List<FileResult> files = null)
         {
             var failed = lines.Where(l => l.StartsWith("COULDN'T") || l.StartsWith("Stopped")).ToList();
             int ok = lines.Count - failed.Count;
-            string summary = (what == "Rename" ? "Renamed " : "Deleted ") + Count(ok, "file") + ".";
+            string summary;
+            if (what == "Rename") summary = "Renamed " + Count(ok, "file") + ".";
+            else
+            {
+                var took = (files ?? new List<FileResult>()).Where(f => f.Kind == FileKind.ExtraInside && f.ExtraItems != null &&
+                                                                       lines.Contains("Took the extra files out of " + f.Name)).ToList();
+                int deleted = ok - took.Count;
+                var parts = new List<string>();
+                if (deleted > 0 || took.Count == 0) parts.Add("Deleted " + Count(deleted, "file"));
+                if (took.Count > 0)
+                    parts.Add((parts.Count > 0 ? "took " : "Took ") + Count(took.Sum(f => f.ExtraItems.Count), "extra file") + " out of " + Count(took.Count, "zip"));
+                summary = string.Join(", and ", parts) + ".";
+            }
             statusLabel.Text = summary + (failed.Count > 0 ? " " + failed.Count + " didn't work." : "");
             if (failed.Count == 0) { ThemedBox.Show(this, summary, Text, MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             using (var f = new TextForm(Text, summary + " These didn't work:", string.Join(Environment.NewLine, failed)))
@@ -2054,10 +2247,12 @@ namespace RomCheckOMatic
     class RegionForm : Form
     {
         public string Order, Ignored;
+        public bool UseCollection;   // the system's own regions were removed: it uses the collection's again
 
-        public RegionForm(string order, string ignored)
+        // system: set the regions for this system only (own: it already has its own).
+        public RegionForm(string order, string ignored, string system = null, bool own = false)
         {
-            Text = "Regions";
+            Text = system == null ? "Regions" : "Region Overrides for " + system;
             Font = new Font("Segoe UI", 9f);
             AutoScaleMode = AutoScaleMode.Dpi;
             Size = new Size(560, 680);
@@ -2070,7 +2265,8 @@ namespace RomCheckOMatic
             var help = new Label
             {
                 Dock = DockStyle.Top, AutoSize = true, MaximumSize = new Size(520, 0), Padding = new Padding(10, 10, 10, 8),
-                Text = "Untick a region to leave out ROMs released only there. They're listed as unneeded and don't count as missing. " +
+                Text = (system == null ? "" : "These regions are for " + system + " only. Other systems keep the collection's regions.\n\n") +
+                       "Untick a region to leave out ROMs released only there. They're listed as unneeded and don't count as missing. " +
                        "A ROM also released in a ticked region, such as (USA, Brazil), is kept.\n\n" +
                        "With \"Use 1G1R\" on, the version from the highest region in this list is kept."
             };
@@ -2099,6 +2295,13 @@ namespace RomCheckOMatic
             };
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
+            if (own)
+            {
+                var shared = new Button { Text = "Use the Collection's Regions", AutoSize = true, MinimumSize = new Size(90, 30) };
+                shared.Click += (s, e) => { UseCollection = true; DialogResult = DialogResult.OK; };
+                Tips.Set(shared, "Removes this system's own regions, so it uses the same regions as the rest of the collection.");
+                buttons.Controls.Add(shared);
+            }
 
             Controls.Add(list);
             Controls.Add(side);

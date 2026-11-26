@@ -1,4 +1,4 @@
-﻿// ROM Check O-MATIC - shows what was found in the downloads folder before anything is moved.
+// ROM Check O-MATIC - shows what was found in the downloads folder before anything is moved.
 
 using System;
 using System.Collections.Generic;
@@ -45,7 +45,7 @@ namespace RomCheckOMatic
                     Text = "Each ROM is zipped with its DAT name, checked against the DAT, and put in its system folder."
                 });
 
-            var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false };
+            var list = new BufferedListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false };
             list.Columns.Add("Downloaded File", 420);
             list.Columns.Add("What Happens", 330);
             list.Columns.Add("ROM", 400);
@@ -68,7 +68,7 @@ namespace RomCheckOMatic
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            removeBox = new CheckBox { Text = "Remove downloads once their ROMs are added", AutoSize = true, Checked = removeDownloads, Anchor = AnchorStyles.Left, Margin = new Padding(3, 7, 3, 3) };
+            removeBox = new CheckBox { Text = "Remove Downloads Once Their ROMs Are Added", AutoSize = true, Checked = removeDownloads, Anchor = AnchorStyles.Left, Margin = new Padding(3, 7, 3, 3) };
             var add = new Button { Text = games.Count == 0 ? "Add" : "Add " + games.Count + " ROM" + (games.Count == 1 ? "" : "s"), AutoSize = true, MinimumSize = new Size(100, 30), Enabled = games.Count > 0, DialogResult = DialogResult.OK };
             var change = new Button { Text = "Change Folder...", AutoSize = true, MinimumSize = new Size(100, 30), DialogResult = DialogResult.Retry };
             var cancel = new Button { Text = games.Count == 0 ? "Close" : "Cancel", AutoSize = true, MinimumSize = new Size(100, 30), DialogResult = DialogResult.Cancel };

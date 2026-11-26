@@ -1,4 +1,4 @@
-﻿// ROM Check O-MATIC - the main window.
+// ROM Check O-MATIC - the main window.
 
 using System;
 using System.Collections.Generic;
@@ -22,6 +22,13 @@ namespace RomCheckOMatic
         public DatGame Game;
         public SystemResult System;
         public long Size = -1;   // for sorting the size column
+    }
+
+    // A list drawn off-screen first. Without this, Windows' hover effect repaints a row as the mouse passes
+    // over it, and the row's text flickers (looks like it dims for a moment).
+    class BufferedListView : ListView
+    {
+        public BufferedListView() { DoubleBuffered = true; }
     }
 
     // A fast list for tens of thousands of rows: only the visible rows are ever built.
@@ -114,7 +121,7 @@ namespace RomCheckOMatic
 
         TextBox romBox, datBox, dlBox, cueBox, filterBox;
         Button scanButton, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, regionButton, typesButton, themeButton, fixButton, deleteButton, addButton, exportButton, changesButton;
-        CheckBox oneGameBox, miaBox, autoBox, scanOnOpenBox, keepPacksBox;
+        CheckBox oneGameBox, keepPacksBox;
         DownloadWatcher watcher;
         bool loading = true;
         Label datLabel, statusLabel, cueLabel;
@@ -145,8 +152,6 @@ namespace RomCheckOMatic
 
             FillCollectionBox();
             ShowCollectionSettings();
-            miaBox.Checked = settings.ShowMia;
-            scanOnOpenBox.Checked = settings.ScanOnOpen;
             loading = false;
             RestoreWindow();
             RestoreColumns();
@@ -165,8 +170,8 @@ namespace RomCheckOMatic
                 await LoadDats();
                 await CheckDownloads();
                 // Adding downloads automatically also needs to know what's missing, so it scans too.
-                if (autoBox.Checked) UpdateWatcher(false);
-                if ((scanOnOpenBox.Checked || autoBox.Checked) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
+                if (settings.AutoAdd) UpdateWatcher(false);
+                if ((settings.ScanOnOpen || watcher != null) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
                 if (settings.CheckUpdates) CheckForUpdate(false);
             };
             FormClosing += (s, e) =>
@@ -201,14 +206,14 @@ namespace RomCheckOMatic
 
             romBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 3) };
             romBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; Scan(); } };
-            romBrowse = MakeButton("Browse...", (s, e) => Browse(romBox, "Choose the folder that holds this ROM set (one subfolder per system)"));
+            romBrowse = MakeButton("Browse...", (s, e) => Browse(romBox, "Choose the ROM Set Folder (the folder that holds this ROM set, one subfolder per system)"));
             scanButton = MakeButton("Scan", (s, e) => Scan());
             scanButton.Font = new Font(Font, FontStyle.Bold);
             scanButton.MinimumSize = new Size(90, 0);
 
             datBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 3) };
             datBox.Leave += async (s, e) => { if (!busy && !SamePath(datBox.Text, settings.DatFolder)) await LoadDats(); };
-            datBrowse = MakeButton("Browse...", async (s, e) => { if (Browse(datBox, "Choose the folder that holds your DAT files (subfolders are searched too)")) await LoadDats(); });
+            datBrowse = MakeButton("Browse...", async (s, e) => { if (Browse(datBox, "Choose the DAT Set Folder (the folder that holds your DAT files; subfolders are searched too)")) await LoadDats(); });
             // These buttons sit at the right of the window, so their menus open leftwards: opening rightwards
             // would push them off the edge, and on a second screen Windows would move them onto it.
             datButton = MakeButton("DAT Files ▾", (s, e) => datMenu.Show(datButton, new Point(datButton.Width, datButton.Height), ToolStripDropDownDirection.BelowLeft));
@@ -223,11 +228,12 @@ namespace RomCheckOMatic
             top.Controls.Add(MakeLabel("Collection:"), 0, 0);
             top.Controls.Add(collectionBox, 1, 0);
 
-            top.Controls.Add(MakeLabel("ROM folder:"), 0, 1);
+            // "set" folders: each holds a whole collection, one subfolder per system (not a single system).
+            top.Controls.Add(MakeLabel("ROM Set Folder:"), 0, 1);
             top.Controls.Add(romBox, 1, 1);
             top.Controls.Add(romBrowse, 2, 1);
             top.Controls.Add(scanButton, 3, 1);
-            top.Controls.Add(MakeLabel("DAT folder:"), 0, 2);
+            top.Controls.Add(MakeLabel("DAT Set Folder:"), 0, 2);
             top.Controls.Add(datBox, 1, 2);
             top.Controls.Add(datBrowse, 2, 2);
             top.Controls.Add(datButton, 3, 2);
@@ -235,18 +241,21 @@ namespace RomCheckOMatic
             // Where downloaded ROMs go, for adding missing ROMs to the set.
             dlBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 3) };
             dlBox.Leave += (s, e) => ApplyDownloadsBox();
-            dlBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; ApplyDownloadsBox(); AddFromFolder(); } };
+            dlBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; ApplyDownloadsBox(); if (watcher == null) AddFromFolder(); } };
             dlBrowse = MakeButton("Browse...", (s, e) => ChooseIncomingFolder());
             addButton = MakeButton("Add Missing", (s, e) => { ApplyDownloadsBox(); AddFromFolder(); });
             addButton.Dock = DockStyle.Fill;
-            top.Controls.Add(MakeLabel("Missing ROMs folder:"), 0, 3);
+            // Wide enough for "Adding Automatically" (shown while new downloads are added automatically), so the
+            // buttons in this column don't change width when that's turned on or off.
+            addButton.MinimumSize = new Size(TextRenderer.MeasureText("Adding Automatically", Font).Width + 24, 0);
+            top.Controls.Add(MakeLabel("ROM Watch Folder:"), 0, 3);
             top.Controls.Add(dlBox, 1, 3);
             top.Controls.Add(dlBrowse, 2, 3);
             top.Controls.Add(addButton, 3, 3);
 
             // Where Redump's cue sheet packs are kept. It's optional ("!" folders in the ROM folder, and the DAT
             // folder, are looked in anyway), and only shown for disc sets or once it's been set.
-            cueLabel = MakeLabel("Cue sheets folder:");
+            cueLabel = MakeLabel("Cue Sheets Folder:");
             cueBox = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 3) };
             cueBox.Leave += (s, e) => ApplyCueBox();
             cueBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; ApplyCueBox(); } };
@@ -273,25 +282,18 @@ namespace RomCheckOMatic
             options.Controls.Add(oneGameBox);
             options.Controls.Add(regionButton);
             options.Controls.Add(typesButton);
-            scanOnOpenBox = new CheckBox { Text = "Scan when the app opens", AutoSize = true, Margin = new Padding(16, 7, 3, 3) };
-            scanOnOpenBox.CheckedChanged += (s, e) => { if (!loading) settings.ScanOnOpen = scanOnOpenBox.Checked; };
-            options.Controls.Add(scanOnOpenBox);
-            autoBox = new CheckBox { Text = "Add new downloads automatically", AutoSize = true, Margin = new Padding(16, 7, 3, 3) };
-            autoBox.CheckedChanged += (s, e) => { if (!loading) { settings.AutoAdd = autoBox.Checked; UpdateWatcher(true); } };
-            options.Controls.Add(autoBox);
+            // (Scan when the app opens, adding new downloads automatically and showing MIA ROMs are in Options.)
             // TOSEC packs (one zip per DAT): fix inside them, or unpack them into one zip per game. Only shown for TOSEC.
-            keepPacksBox = new CheckBox { Text = "Keep TOSEC packs", AutoSize = true, Margin = new Padding(16, 7, 3, 3), Visible = false };
+            keepPacksBox = new CheckBox { Text = "Keep TOSEC Packs", AutoSize = true, Margin = new Padding(16, 7, 3, 3), Visible = false };
             keepPacksBox.CheckedChanged += (s, e) => { if (!loading) { settings.KeepPacks = keepPacksBox.Checked; if (results.Any(r => r.IsPack) && !busy) Scan(); } };
             options.Controls.Add(keepPacksBox);
             options.Controls.Add(datLabel);
             top.Controls.Add(options, 1, 5);
 
-            // Options, at the right.
+            // Options, at the right, as wide as the buttons above it.
             themeButton.Dock = DockStyle.None;
-            var rightButtons = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Anchor = AnchorStyles.Right, Margin = new Padding(0) };
-            rightButtons.Controls.Add(themeButton);
-            top.Controls.Add(rightButtons, 2, 5);
-            top.SetColumnSpan(rightButtons, 2);
+            themeButton.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+            top.Controls.Add(themeButton, 3, 5);
 
             Controls.Add(top);
         }
@@ -305,30 +307,35 @@ namespace RomCheckOMatic
         void SetTips()
         {
             Tips.Enabled = settings.ShowTips;
-            Tips.Set(collectionBox, "Which ROM set to work on: No-Intro, Redump, MAME, TOSEC or your own.\nEach collection has its own folders and settings. \"New collection...\" adds one.");
-            Tips.Set(romBox, "The folder that holds this ROM set, with one subfolder per system.\nPress Enter to scan.");
+            Tips.Set(collectionBox, "Which ROM set to work on: No-Intro, Redump, MAME, TOSEC or your own.\nEach collection has its own folders and settings. \"New Collection...\" adds one.");
+            Tips.Set(romBox, "The folder that holds this whole ROM set, with one subfolder per system\n(not a single system's folder). Press Enter to scan.");
             Tips.Set(romBrowse, "Choose the folder that holds this ROM set.");
             Tips.Set(scanButton, "Checks every system against its DAT.\nNothing is changed by scanning. Click again to stop.");
-            Tips.Set(datBox, "The folder that holds this collection's DAT files.\nSubfolders are searched too, and the newest copy of each DAT is used.");
+            Tips.Set(datBox, "The folder that holds this collection's DAT files, for every system.\nSubfolders are searched too, and the newest copy of each DAT is used.");
             Tips.Set(datBrowse, "Choose the folder that holds your DAT files.");
             Tips.Set(datButton, "Download, import, reload or show your DAT files,\nand rename system folders with their DAT dates.");
-            Tips.Set(dlBox, "The folder you download missing ROMs into, such as Downloads.\nAdd Missing takes ROMs from here and puts them in your set.");
+            Tips.Set(dlBox, "The folder you download missing ROMs into, such as Downloads. Add Missing\n(or Options > Add Downloads Automatically) takes ROMs from here and puts them in your set.");
             Tips.Set(dlBrowse, "Choose the folder you download missing ROMs into.");
-            Tips.Set(addButton, "Looks in the Missing ROMs folder for ROMs you're missing, and shows what it found.\nWhen you confirm, each one is zipped with its DAT name, checked, and put in its system folder.");
+            SetAddTip();
             Tips.Set(cueBox, "Where Redump's cue sheet packs (the Cuesheets zips) are kept. Optional:\n\"!\" folders in the ROM folder, and the DAT folder, are looked in anyway.");
             Tips.Set(cueBrowse, "Choose the folder that holds your cue sheet packs.");
             Tips.Set(oneGameBox, "1G1R (one game, one ROM): keep only the best version of each title,\nby your region order. Other versions are listed as unneeded.");
             Tips.Set(regionButton, "Set the region order for 1G1R, and untick regions to leave out\nROMs released only there.");
             Tips.Set(typesButton, "Choose which kinds of ROM to keep: betas, prototypes, demos,\nunlicensed, pirate, aftermarket, BIOS files and applications.");
-            Tips.Set(scanOnOpenBox, "Scan your set every time the app opens, so the lists are always up to date.");
-            Tips.Set(autoBox, "While the app is open, ROMs that land in your Missing ROMs folder are added\nto your set as soon as they've finished downloading.");
             Tips.Set(keepPacksBox, "Ticked: games are fixed inside your TOSEC packs (one zip per DAT).\nUnticked: Fix Wrong Names unpacks each pack into a folder with one zip per game.");
-            Tips.Set(themeButton, "Theme (match Windows, light or dark), pop-up tips, the Recycle Bin\nand update checks. These settings are shared by every collection.");
+            Tips.Set(themeButton, "The theme, what double-clicking a file does, scanning when the app opens, adding\ndownloads automatically, pop-up tips, the Recycle Bin and update checks. Shared by every collection.");
             Tips.Set(fixButton, "Renames every file under Wrong Name to its DAT name (inside zips too).\nWith a system selected, only that system. You're asked first.");
             Tips.Set(deleteButton, "Permanently deletes every file under Unneeded.\nWith a system selected, only that system. You're asked first.");
             Tips.Set(exportButton, "Saves a text report of what's missing, misnamed and unneeded.\nWith All systems selected, each system gets its own report in its own folder.");
             Tips.Set(filterBox, "Shows only the rows that contain this text.");
-            Tips.Set(miaBox, "MIA ROMs are ones no known dump exists for.\nUntick to leave them out of the Missing list.");
+        }
+
+        // Add Missing isn't needed while new downloads are added automatically: it's greyed out and says so.
+        void SetAddTip()
+        {
+            Tips.Set(addButton, watcher != null
+                ? "New downloads in the ROM Watch Folder are being added automatically, so this isn't needed.\nTo add them yourself instead, untick Options > Add Downloads Automatically."
+                : "Looks in the ROM Watch Folder for ROMs you're missing, and shows what it found.\nWhen you confirm, each one is zipped with its DAT name, checked, and put in its system folder.");
         }
 
         void BuildBottom()
@@ -363,8 +370,10 @@ namespace RomCheckOMatic
         {
             split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1, Padding = new Padding(6, 4, 6, 4) };
 
-            systemList = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false };
+            systemList = new BufferedListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HideSelection = false, MultiSelect = false };
             systemList.Columns.Add("System", 260);
+            // A tick for systems with their own regions or ROM types (right-click a system to set them).
+            systemList.Columns.Add("Overrides", 70, HorizontalAlignment.Center);
             systemList.Columns.Add("Have", 90, HorizontalAlignment.Right);
             systemList.Columns.Add("Missing", 60, HorizontalAlignment.Right);
             systemList.Columns.Add("Wrong Name", 90, HorizontalAlignment.Right);
@@ -385,12 +394,9 @@ namespace RomCheckOMatic
             var filterRow = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = false };
             filterBox = new TextBox { Width = 300, Margin = new Padding(3, 3, 3, 3) };
             filterBox.TextChanged += (s, e) => RefreshRows();
-            miaBox = new CheckBox { Text = "Show MIA ROMs in Missing", AutoSize = true, Margin = new Padding(16, 5, 3, 3) };
-            miaBox.CheckedChanged += (s, e) => { settings.ShowMia = miaBox.Checked; RefreshRows(); };
             var filterLabel = MakeLabel("Filter:"); filterLabel.Margin = new Padding(0, 6, 3, 3);
             filterRow.Controls.Add(filterLabel);
             filterRow.Controls.Add(filterBox);
-            filterRow.Controls.Add(miaBox);
 
             tabs = new TabStrip();
             var pages = new Panel { Dock = DockStyle.Fill };
@@ -422,7 +428,14 @@ namespace RomCheckOMatic
             pages.Controls.Add(list);
             var tab = tabs.Add(list);
             list.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) ShowListMenu(list, e.Location); };
-            list.DoubleClick += (s, e) => { var r = list.SelectedRows().FirstOrDefault(); if (r != null) ShowInFolder(r); };
+            // Options > Double-Clicking a File: open it, or show it in its folder. With no file (Missing), the system's folder opens.
+            list.DoubleClick += (s, e) =>
+            {
+                var r = list.SelectedRows().FirstOrDefault();
+                if (r == null) return;
+                if (settings.DoubleClickOpens && HasFile(r)) OpenFile(r);
+                else ShowInFolder(r);
+            };
             list.KeyDown += (s, e) =>
             {
                 if (e.Control && e.KeyCode == Keys.A) { for (int i = 0; i < list.VirtualListSize; i++) list.SelectedIndices.Add(i); e.Handled = true; }
@@ -559,6 +572,19 @@ namespace RomCheckOMatic
                 themeItems.Add(item);
             }
             themeMenu.Items.Add(new ToolStripSeparator());
+
+            // What double-clicking a file in the lists does (Missing always opens the system's folder: there's no file).
+            themeMenu.Items.Add(new ToolStripLabel("Double-Clicking a File") { ForeColor = SystemColors.GrayText });
+            var clickFolderItem = new ToolStripMenuItem("Shows It in Its Folder");
+            var clickOpenItem = new ToolStripMenuItem("Opens It");
+            clickFolderItem.Click += (s, e) => settings.DoubleClickOpens = false;
+            clickOpenItem.Click += (s, e) => settings.DoubleClickOpens = true;
+            Tips.Item(clickFolderItem, "Double-clicking a file opens File Explorer with the file selected.");
+            Tips.Item(clickOpenItem, "Double-clicking a file opens it with whatever Windows opens that kind of file with,\nsuch as 7-Zip for a zip. (For a MAME folder of CHDs, the folder is opened.)");
+            themeMenu.Items.Add(clickFolderItem);
+            themeMenu.Items.Add(clickOpenItem);
+            themeMenu.Items.Add(new ToolStripSeparator());
+
             var fitItem = new ToolStripMenuItem("Fit Columns Automatically");
             fitItem.Click += (s, e) =>
             {
@@ -569,12 +595,28 @@ namespace RomCheckOMatic
             themeMenu.Items.Add(fitItem);
             Tips.Item(fitItem, "Ticked: the list columns are sized to fit what's in them whenever the lists change.\n" +
                                "Unticked: columns stay the width you drag them to, and the app remembers them.");
+            var miaItem = new ToolStripMenuItem("Show MIA ROMs in Missing");
+            miaItem.Click += (s, e) => { settings.ShowMia = !settings.ShowMia; RefreshRows(); };
+            themeMenu.Items.Add(miaItem);
+            Tips.Item(miaItem, "MIA ROMs are ones no known dump exists for.\nUntick to leave them out of the Missing list.");
             var tipsItem = new ToolStripMenuItem("Show Pop-up Tips");
             tipsItem.Click += (s, e) => { settings.ShowTips = !settings.ShowTips; SetTips(); };
             themeMenu.Items.Add(tipsItem);
+            themeMenu.Items.Add(new ToolStripSeparator());
+
+            var scanOpenItem = new ToolStripMenuItem("Scan When the App Opens");
+            scanOpenItem.Click += (s, e) => settings.ScanOnOpen = !settings.ScanOnOpen;
+            themeMenu.Items.Add(scanOpenItem);
+            Tips.Item(scanOpenItem, "Scans your set every time the app opens, so the lists are always up to date.");
             var recycleItem = new ToolStripMenuItem("Delete to the Recycle Bin");
             recycleItem.Click += (s, e) => { settings.UseRecycleBin = !settings.UseRecycleBin; Fixer.UseRecycleBin = settings.UseRecycleBin; };
             themeMenu.Items.Add(recycleItem);
+            var autoItem = new ToolStripMenuItem("Add Downloads Automatically");
+            autoItem.Click += (s, e) => { settings.AutoAdd = !settings.AutoAdd; UpdateWatcher(true); };
+            themeMenu.Items.Add(autoItem);
+            Tips.Item(autoItem, "While the app is open, ROMs that land in the collection's ROM Watch Folder are added\n" +
+                                "to your set as soon as they've finished downloading. Add Missing isn't needed\n" +
+                                "while it's on, so it's greyed out. A collection with no ROM Watch Folder uses Add Missing.");
             var removeItem = new ToolStripMenuItem("Remove Downloads Once Their ROMs Are Added");
             removeItem.Click += (s, e) => { settings.RemoveDownloads = !settings.RemoveDownloads; };
             themeMenu.Items.Add(removeItem);
@@ -589,7 +631,7 @@ namespace RomCheckOMatic
                 "Asks GitHub now whether there's a newer version, and offers to open its download page.");
             Tips.Item(tipsItem, "Shows a short explanation like this one when the mouse rests on a button, box or menu item.");
             Tips.Item(recycleItem, "Ticked: deleted files go to the Recycle Bin, so you can get them back.\nUnticked: they're deleted outright.");
-            Tips.Item(removeItem, "Ticked: a download is deleted from the missing ROMs folder once its ROMs are safely in your set.\n" +
+            Tips.Item(removeItem, "Ticked: a download is deleted from the ROM Watch Folder once its ROMs are safely in your set.\n" +
                                   "Unticked: downloads are left where they are. Downloads holding other files too are always kept.");
             Tips.Item(awakeItem, "Ticked: the PC won't go to sleep while a scan, fix, delete or add is running.\n" +
                                  "The screen can still turn off. Normal sleep settings return when the job ends.");
@@ -597,9 +639,20 @@ namespace RomCheckOMatic
             themeMenu.Opening += (s, e) =>
             {
                 foreach (var item in themeItems) item.Checked = (string)item.Tag == settings.Theme;
+                clickFolderItem.Checked = !settings.DoubleClickOpens;
+                clickOpenItem.Checked = settings.DoubleClickOpens;
+                miaItem.Checked = settings.ShowMia;
+                // Adding downloads automatically scans when the app opens anyway (it needs to know what's missing),
+                // so while it's on this is greyed out and shown ticked. Its own setting comes back when that's turned off.
+                scanOpenItem.Enabled = !settings.AutoAdd;
+                scanOpenItem.Checked = settings.ScanOnOpen || settings.AutoAdd;
+                Tips.Item(scanOpenItem, settings.AutoAdd
+                    ? "The app always scans when it opens while Add Downloads Automatically is on,\nas it needs to know what's missing. Untick that to choose here."
+                    : "Scans your set every time the app opens, so the lists are always up to date.");
                 fitItem.Checked = settings.AutoFitColumns;
                 tipsItem.Checked = settings.ShowTips;
                 recycleItem.Checked = settings.UseRecycleBin;
+                autoItem.Checked = settings.AutoAdd;
                 removeItem.Checked = settings.RemoveDownloads;
                 awakeItem.Checked = settings.KeepAwake;
                 updatesItem.Checked = settings.CheckUpdates;
@@ -659,12 +712,12 @@ namespace RomCheckOMatic
             dlBox.Text = settings.IncomingFolder;
             cueBox.Text = settings.CueFolder;
             oneGameBox.Checked = settings.OneGamePerTitle;
-            autoBox.Checked = settings.AutoAdd;
             keepPacksBox.Checked = settings.KeepPacks;
             loading = was;
             Text = AppTitle + " - " + settings.Collection;
             UpdateRegionButton();
             UpdateTypesButton();
+            UpdateAddButton();
         }
 
         async void CollectionPicked()
@@ -676,7 +729,7 @@ namespace RomCheckOMatic
             if (picked == NewCollectionItem)
             {
                 string name = InputBox.Ask(this, "New Collection", "Name for the new collection, for example TOSEC.\n" +
-                                           "It gets its own ROM, DAT and missing ROMs folders and its own settings.", "");
+                                           "It gets its own ROM Set Folder, DAT Set Folder and ROM Watch Folder, and its own settings.", "");
                 name = name == null ? null : name.Trim();
                 if (string.IsNullOrEmpty(name)) { FillCollectionBox(); return; }
                 if (name.IndexOfAny(new[] { ',', '[', ']', '=' }) >= 0 || settings.Collections.Contains(name, StringComparer.OrdinalIgnoreCase) || name == NewCollectionItem)
@@ -705,9 +758,9 @@ namespace RomCheckOMatic
             RefreshAll();
             ShowCollectionSettings();
             await LoadDats();
-            if (autoBox.Checked) UpdateWatcher(false);
-            if (Directory.Exists(romBox.Text.Trim()) && (scanOnOpenBox.Checked || autoBox.Checked)) Scan();
-            else statusLabel.Text = romBox.Text.Trim().Length == 0 ? "Choose the ROM and DAT folders for the " + picked + " collection" : "Ready";
+            if (settings.AutoAdd) UpdateWatcher(false);
+            if (Directory.Exists(romBox.Text.Trim()) && (settings.ScanOnOpen || watcher != null)) Scan();
+            else statusLabel.Text = romBox.Text.Trim().Length == 0 ? "Choose the ROM Set Folder and DAT Set Folder for the " + picked + " collection" : "Ready";
         }
 
         // ------------------------------------------------------------ fitting columns
@@ -917,13 +970,10 @@ namespace RomCheckOMatic
 
         void UpdateTypesButton()
         {
+            // Just how many are left out: the window shows which.
             var leave = settings.Exclude;
-            if (leave == GameType.None) typesButton.Text = "ROM Types: Keeping All";
-            else
-            {
-                var names = GameTypes.All.Where(t => (leave & t) != 0).Select(GameTypes.Short).ToList();
-                typesButton.Text = "ROM Types: Leaving Out " + (names.Count <= 3 ? string.Join(", ", names) : string.Join(", ", names.Take(2)) + " and " + (names.Count - 2) + " more");
-            }
+            int n = GameTypes.All.Count(t => (leave & t) != 0);
+            typesButton.Text = "Set ROM Types (" + (n == 0 ? "none" : n.ToString()) + " left out)";
         }
 
         void EditGameTypes()
@@ -966,10 +1016,9 @@ namespace RomCheckOMatic
 
         void UpdateRegionButton()
         {
-            var first = Preference.ParseList(settings.Regions).Take(3).ToList();
-            var ignored = Settings.RegionSet(settings.IgnoredRegions);
-            regionButton.Text = "Regions: " + string.Join(", ", first) + "..." +
-                (ignored.Count == 0 ? "" : ignored.Count <= 2 ? " (leaving out " + string.Join(", ", ignored.OrderBy(r => r)) + ")" : " (leaving out " + ignored.Count + ")");
+            // Just how many are left out: the window shows which, and the order.
+            int ignored = Settings.RegionSet(settings.IgnoredRegions).Count;
+            regionButton.Text = "Set Regions (" + (ignored == 0 ? "none" : ignored.ToString()) + " left out)";
             regionButton.Enabled = !busy;
         }
 
@@ -980,13 +1029,10 @@ namespace RomCheckOMatic
 
         bool Browse(TextBox box, string title)
         {
-            using (var d = new FolderBrowserDialog { Description = title, ShowNewFolderButton = false })
-            {
-                if (Directory.Exists(box.Text)) d.SelectedPath = box.Text;
-                if (d.ShowDialog(this) != DialogResult.OK) return false;
-                box.Text = d.SelectedPath;
-                return true;
-            }
+            string chosen = FolderPicker.Choose(this, title, box.Text.Trim());
+            if (chosen == null) return false;
+            box.Text = chosen;
+            return true;
         }
 
         // ------------------------------------------------------------ busy state
@@ -996,7 +1042,7 @@ namespace RomCheckOMatic
             busy = on;
             Awake.Set(on && settings.KeepAwake);
             scanButton.Text = on ? "Stop" : "Scan";
-            foreach (Control c in new Control[] { romBox, datBox, dlBox, cueBox, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, oneGameBox, typesButton, fixButton, deleteButton, addButton, autoBox, keepPacksBox, exportButton })
+            foreach (Control c in new Control[] { romBox, datBox, dlBox, cueBox, romBrowse, datBrowse, dlBrowse, cueBrowse, datButton, oneGameBox, typesButton, fixButton, deleteButton, addButton, keepPacksBox, exportButton })
                 c.Enabled = !on;
             regionButton.Enabled = !on;
             progress.Visible = on;
@@ -1025,7 +1071,7 @@ namespace RomCheckOMatic
             {
                 index = new DatIndex { Root = root };
                 ShowCueRow();
-                datLabel.Text = "The DAT folder doesn't exist";
+                datLabel.Text = "The DAT Set Folder doesn't exist";
                 return;
             }
             SetBusy(true);
@@ -1038,7 +1084,7 @@ namespace RomCheckOMatic
                 string romRoot = romBox.Text.Trim(), cueRoot = settings.CueFolder;
                 cues = ShowCueRow() ? await Task.Run(() => CueIndex.Build(romRoot, root, cueRoot)) : null;
                 UpdateDatLabel();
-                statusLabel.Text = index.ByName.Count == 0 ? "No DAT files found in the DAT folder" : "Ready";
+                statusLabel.Text = index.ByName.Count == 0 ? "No DAT files found in the DAT Set Folder" : "Ready";
             }
             catch (OperationCanceledException) { statusLabel.Text = "Stopped"; }
             finally { SetBusy(false); }
@@ -1080,7 +1126,7 @@ namespace RomCheckOMatic
         async Task ImportPack(string zipPath)
         {
             string root = datBox.Text.Trim();
-            if (!Directory.Exists(root)) { ThemedBox.Show(this, "Choose a DAT folder first.", Text); return; }
+            if (!Directory.Exists(root)) { ThemedBox.Show(this, "Choose a DAT Set Folder first.", Text); return; }
             string name = Path.GetFileNameWithoutExtension(zipPath);
             string dest = Path.Combine(root, name);
             SetBusy(true);
@@ -1267,7 +1313,7 @@ namespace RomCheckOMatic
             if (index == null || !SamePath(index.Root, datBox.Text)) await LoadDats();
             if (index.ByName.Count == 0)
             {
-                ThemedBox.Show(this, "No DAT files were found in the DAT folder. Choose the folder where your DAT pack is, or use DAT Files > Import.", Text);
+                ThemedBox.Show(this, "No DAT files were found in the DAT Set Folder. Choose the folder where your DAT pack is, or use DAT Files > Import.", Text);
                 return;
             }
 
@@ -1414,7 +1460,7 @@ namespace RomCheckOMatic
             if (results.Count > 0)
             {
                 var all = new ListViewItem(new[] {
-                    "All systems (" + results.Count + ")",
+                    "All systems (" + results.Count + ")", "",
                     results.Sum(s => s.Have) + " / " + results.Sum(s => s.Total),
                     results.Sum(s => s.MissingCount).ToString(),
                     results.Sum(s => s.Count(f => f.IsFixable)).ToString(),
@@ -1427,15 +1473,16 @@ namespace RomCheckOMatic
             foreach (var s in results)
             {
                 ListViewItem item;
+                string own = s.OwnRegions || s.OwnTypes ? "✓" : "";
                 if (s.Error != null)
                 {
-                    item = new ListViewItem(new[] { s.FolderName, "", "", "", "", s.Error });
+                    item = new ListViewItem(new[] { s.FolderName, own, "", "", "", "", s.Error });
                     item.ForeColor = Theme.Current.Gray;
                 }
                 else
                 {
                     item = new ListViewItem(new[] {
-                        s.FolderName, s.Have + " / " + s.Total, s.MissingCount.ToString(), s.Count(f => f.IsFixable).ToString(),
+                        s.FolderName, own, s.Have + " / " + s.Total, s.MissingCount.ToString(), s.Count(f => f.IsFixable).ToString(),
                         s.Count(f => f.IsUnneeded).ToString(), s.Count(f => f.IsProblem).ToString() });
                     StatusColours(item);
                 }
@@ -1449,18 +1496,19 @@ namespace RomCheckOMatic
 
         // Each count is green when it's 0 and red when it isn't. Have goes with Missing, and the system's
         // name is red if anything at all needs doing, so problem systems still stand out in a long list.
+        // Columns: System, Overrides (plain), Have, Missing, Wrong Name, Unneeded, Problems.
         static void StatusColours(ListViewItem item)
         {
             item.UseItemStyleForSubItems = false;
             bool clean = true;
-            for (int i = 2; i <= 5 && i < item.SubItems.Count; i++)
+            for (int i = 3; i <= 6 && i < item.SubItems.Count; i++)
             {
                 int n;
                 bool bad = int.TryParse(item.SubItems[i].Text, out n) && n > 0;
                 item.SubItems[i].ForeColor = bad ? Theme.Current.Bad : Theme.Current.Good;
                 if (bad) clean = false;
             }
-            if (item.SubItems.Count > 2) item.SubItems[1].ForeColor = item.SubItems[2].ForeColor;
+            if (item.SubItems.Count > 3) item.SubItems[2].ForeColor = item.SubItems[3].ForeColor;
             item.ForeColor = item.SubItems[0].ForeColor = clean ? Theme.Current.Good : Theme.Current.Bad;
         }
 
@@ -1497,7 +1545,7 @@ namespace RomCheckOMatic
                 if (s.Error != null) problems.Add(new Row { System = s, Cells = new[] { s.FolderName, "(the whole folder)", s.Error } });
                 foreach (var g in s.Missing)
                 {
-                    if (g.Mia && !miaBox.Checked) continue;
+                    if (g.Mia && !settings.ShowMia) continue;
                     var notes = new List<string>();
                     if (g.Mia) notes.Add("MIA (no known dump)");
                     if (g.BadDump) notes.Add("Only a bad dump is known");
@@ -1543,7 +1591,7 @@ namespace RomCheckOMatic
             fixButton.Enabled = fix > 0;
             deleteButton.Enabled = del.Count > 0;
             exportButton.Enabled = results.Count > 0;
-            addButton.Enabled = results.Any(r => r.Error == null);
+            addButton.Enabled = watcher == null && results.Any(r => r.Error == null);
         }
 
         // ------------------------------------------------------------ actions
@@ -1587,8 +1635,17 @@ namespace RomCheckOMatic
                                              null, (s, e) => SetIgnored(ignored, false)),
                     "Takes these files off the ignore list, so they're checked like any other file again.");
             if (listMenu.Items.Count > 0) listMenu.Items.Add(new ToolStripSeparator());
-            Tips.Item(listMenu.Items.Add("Show in Folder", null, (s, e) => ShowInFolder(rows[0])),
-                "Opens the folder in File Explorer, with the file selected.");
+            if (HasFile(rows[0]))
+            {
+                Tips.Item(listMenu.Items.Add("Open File", null, (s, e) => OpenFile(rows[0])),
+                    "Opens the file with whatever Windows opens that kind of file with, such as 7-Zip for a zip.");
+                Tips.Item(listMenu.Items.Add("Show in Folder", null, (s, e) => ShowInFolder(rows[0])),
+                    "Opens the folder in File Explorer, with the file selected.");
+            }
+            else
+                // A missing ROM (or a system with no file to point at): there's only the system's folder to show.
+                Tips.Item(listMenu.Items.Add("Open System Folder", null, (s, e) => ShowInFolder(rows[0])),
+                    "Opens the system's folder in File Explorer.");
             Tips.Item(listMenu.Items.Add("Copy Names", null, (s, e) => CopyNames(list)),
                 "Copies the names of the selected rows, one per line, to paste elsewhere.");
             if (rows[0].Game != null)
@@ -1701,6 +1758,25 @@ namespace RomCheckOMatic
             if (r.File != null && File.Exists(r.File.Path)) Process.Start("explorer.exe", "/select,\"" + r.File.Path + "\"");
             else if (r.System != null && r.System.IsPack && File.Exists(r.System.Folder)) Process.Start("explorer.exe", "/select,\"" + r.System.Folder + "\"");
             else if (r.System != null) OpenFolder(r.System.Folder);
+        }
+
+        // The row is a file (or a MAME game's folder of CHDs) that's there to open.
+        static bool HasFile(Row r)
+        {
+            return r.File != null && (r.File.IsFolder ? Directory.Exists(r.File.Path) : File.Exists(r.File.Path));
+        }
+
+        // Opens the file with whatever Windows opens that kind of file with. A MAME game's folder of CHDs opens in File Explorer.
+        void OpenFile(Row r)
+        {
+            if (!HasFile(r)) { ShowInFolder(r); return; }
+            if (r.File.IsFolder) { OpenFolder(r.File.Path); return; }
+            try { Process.Start(new ProcessStartInfo(r.File.Path) { UseShellExecute = true }); }
+            catch (Exception ex)
+            {
+                ThemedBox.Show(this, "Couldn't open " + Path.GetFileName(r.File.Path) + ":\n\n" + ex.Message +
+                               "\n\n(Windows may not have a program set up for this kind of file.)", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
 
         static void OpenFolder(string path)
@@ -1845,14 +1921,32 @@ namespace RomCheckOMatic
 
         // ------------------------------------------------------------ adding missing games from a folder
 
-        // Starts or stops watching the downloads folder, to match the tick box.
+        // While new downloads are being added automatically, Add Missing is greyed out and says so.
+        // (A collection with no ROM Watch Folder isn't watched, so it uses Add Missing as normal.)
+        void UpdateAddButton()
+        {
+            addButton.Text = watcher != null ? "Adding Automatically" : "Add Missing";
+            SetAddTip();
+            if (!busy) UpdateButtons();
+        }
+
+        // Starts or stops watching this collection's ROM Watch Folder, to match Options > Add Downloads Automatically.
         void UpdateWatcher(bool userClicked)
         {
             if (watcher != null) { watcher.Dispose(); watcher = null; }
-            if (!autoBox.Checked) { statusLabel.Text = userClicked ? "Stopped watching for downloads" : statusLabel.Text; return; }
+            StartWatcher(userClicked);
+            UpdateAddButton();
+        }
+
+        void StartWatcher(bool userClicked)
+        {
+            if (!settings.AutoAdd) { if (userClicked) statusLabel.Text = "Stopped watching for downloads"; return; }
             if (!Directory.Exists(settings.IncomingFolder))
             {
-                if (!userClicked || !ChooseIncomingFolder()) { loading = true; autoBox.Checked = false; loading = false; settings.AutoAdd = false; return; }
+                // Just turned on: ask for the folder, and turn it back off if none is chosen. Otherwise this
+                // collection has no ROM Watch Folder yet, so it isn't watched (the setting stays on for the others).
+                if (userClicked && !ChooseIncomingFolder(false)) settings.AutoAdd = false;
+                if (!Directory.Exists(settings.IncomingFolder)) return;
             }
             try
             {
@@ -1861,7 +1955,7 @@ namespace RomCheckOMatic
             catch (Exception ex)
             {
                 ThemedBox.Show(this, "Couldn't watch " + settings.IncomingFolder + ":\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
-                loading = true; autoBox.Checked = false; loading = false; settings.AutoAdd = false;
+                if (userClicked) settings.AutoAdd = false;
                 return;
             }
             watcher.Ready += files => AutoAdd(files);
@@ -1971,17 +2065,15 @@ namespace RomCheckOMatic
 
         async void ChooseCueFolder()
         {
-            using (var d = new FolderBrowserDialog { Description = "Choose the folder that holds your cue sheet packs (the Cuesheets zips from redump.org) or cue sheets. Subfolders are searched too.", ShowNewFolderButton = false })
-            {
-                string current = settings.CueFolder, rom = romBox.Text.Trim();
-                d.SelectedPath = Directory.Exists(current) ? current : (Directory.Exists(rom) ? rom : "");
-                if (d.ShowDialog(this) != DialogResult.OK) return;
-                string chosen = d.SelectedPath.TrimEnd('\\');
-                cueBox.Text = chosen;
-                if (SamePath(chosen, settings.CueFolder)) return;
-                settings.CueFolder = chosen;
-                await RefreshCues();
-            }
+            string current = settings.CueFolder, rom = romBox.Text.Trim();
+            string chosen = FolderPicker.Choose(this, "Choose the Cue Sheets Folder (where your Redump cue sheet packs or cue sheets are kept)",
+                                                Directory.Exists(current) ? current : rom);
+            if (chosen == null) return;
+            chosen = chosen.TrimEnd('\\');
+            cueBox.Text = chosen;
+            if (SamePath(chosen, settings.CueFolder)) return;
+            settings.CueFolder = chosen;
+            await RefreshCues();
         }
 
         // Takes a downloads folder typed into the box, checking it first.
@@ -1991,7 +2083,7 @@ namespace RomCheckOMatic
             if (SamePath(typed, settings.IncomingFolder)) return;
             string root = romBox.Text.Trim().TrimEnd('\\');
             string problem = typed.Length == 0 ? null
-                           : !Directory.Exists(typed) ? "The missing ROMs folder \"" + typed + "\" doesn't exist."
+                           : !Directory.Exists(typed) ? "The ROM Watch Folder \"" + typed + "\" doesn't exist."
                            : root.Length > 0 && (SamePath(typed, root) || typed.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase))
                              ? "That folder is part of your ROM set. Choose the separate folder you download missing ROMs into." : null;
             if (problem != null)
@@ -2001,29 +2093,29 @@ namespace RomCheckOMatic
                 return;
             }
             settings.IncomingFolder = typed;
-            if (watcher != null || autoBox.Checked) UpdateWatcher(false);
+            if (watcher != null || settings.AutoAdd) UpdateWatcher(false);
         }
 
-        bool ChooseIncomingFolder()
+        // restartWatcher: false when called while the watcher is being started anyway.
+        bool ChooseIncomingFolder(bool restartWatcher = true)
         {
-            using (var d = new FolderBrowserDialog { Description = "Choose your missing ROMs folder (where you download missing ROMs to)", ShowNewFolderButton = true })
+            string current = settings.IncomingFolder;
+            string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            string chosen = FolderPicker.Choose(this, "Choose the ROM Watch Folder (where you download missing ROMs to)",
+                                                Directory.Exists(current) ? current : downloads);
+            if (chosen == null) return false;
+            chosen = chosen.TrimEnd('\\');
+            string root = romBox.Text.Trim();
+            if (root.Length > 0 && (SamePath(chosen, root) || chosen.StartsWith(root.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)))
             {
-                string current = settings.IncomingFolder;
-                string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-                d.SelectedPath = Directory.Exists(current) ? current : (Directory.Exists(downloads) ? downloads : "");
-                if (d.ShowDialog(this) != DialogResult.OK) return false;
-                string root = romBox.Text.Trim();
-                string chosen = d.SelectedPath.TrimEnd('\\');
-                if (root.Length > 0 && (SamePath(chosen, root) || chosen.StartsWith(root.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase)))
-                {
-                    ThemedBox.Show(this, "That folder is part of your ROM set. Choose the separate folder you download missing ROMs into.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return false;
-                }
-                settings.IncomingFolder = chosen;
-                dlBox.Text = chosen;
-                if (watcher != null && !SamePath(watcher.Folder, chosen)) BeginInvoke((Action)(() => UpdateWatcher(false)));
-                return true;
+                ThemedBox.Show(this, "That folder is part of your ROM set. Choose the separate folder you download missing ROMs into.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
             }
+            settings.IncomingFolder = chosen;
+            dlBox.Text = chosen;
+            // Adding automatically: watch the new folder (or start watching, if this collection had none).
+            if (restartWatcher && settings.AutoAdd && (watcher == null || !SamePath(watcher.Folder, chosen))) BeginInvoke((Action)(() => UpdateWatcher(false)));
+            return true;
         }
 
         async void AddFromFolder()
@@ -2031,7 +2123,7 @@ namespace RomCheckOMatic
             if (busy) return;
             if (!results.Any(r => r.Error == null))
             {
-                ThemedBox.Show(this, "Scan your ROM folder first, so the app knows which ROMs are missing.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ThemedBox.Show(this, "Scan your ROM set first, so the app knows which ROMs are missing.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
             if (!Directory.Exists(settings.IncomingFolder) && !ChooseIncomingFolder()) return;
@@ -2107,7 +2199,7 @@ namespace RomCheckOMatic
                 if (d.ShowDialog(this) != DialogResult.OK) return;
                 try
                 {
-                    File.WriteAllText(d.FileName, Report.Build(Scope(), miaBox.Checked), System.Text.Encoding.UTF8);
+                    File.WriteAllText(d.FileName, Report.Build(Scope(), settings.ShowMia), System.Text.Encoding.UTF8);
                     if (SamePath(Path.GetDirectoryName(d.FileName), folder)) RemoveOldReports(sys, d.FileName);
                     Process.Start(d.FileName);
                 }
@@ -2153,7 +2245,7 @@ namespace RomCheckOMatic
                 try
                 {
                     string path = s.IsPack ? Path.Combine(Path.GetDirectoryName(s.Folder), PackReportName(fileName, s)) : Path.Combine(s.Folder, fileName);
-                    File.WriteAllText(path, Report.Build(new[] { s }, miaBox.Checked), System.Text.Encoding.UTF8);
+                    File.WriteAllText(path, Report.Build(new[] { s }, settings.ShowMia), System.Text.Encoding.UTF8);
                     RemoveOldReports(s, path);
                 }
                 catch (Exception ex) { failed.Add(s.FolderName + ": " + ex.Message); }
@@ -2332,8 +2424,9 @@ namespace RomCheckOMatic
                 int i = IndexFromPoint(e.Location);
                 if (i >= 0 && e.X < BoxRect(GetItemRectangle(i)).Right + 6) Toggle(i);
             };
-            MouseMove += (s, e) => { int i = IndexFromPoint(e.Location); if (i != hover) { hover = i; Invalidate(); } };
-            MouseLeave += (s, e) => { hover = -1; Invalidate(); };
+            // Only the rows whose hover look changes are redrawn, not the whole list (which made the text flicker).
+            MouseMove += (s, e) => { int i = IndexFromPoint(e.Location); if (i != hover) { RedrawRow(hover); hover = i; RedrawRow(hover); } };
+            MouseLeave += (s, e) => { RedrawRow(hover); hover = -1; };
             DoubleClick += (s, e) => { if (SelectedIndex >= 0) Toggle(SelectedIndex); };
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Space && SelectedIndex >= 0) { Toggle(SelectedIndex); e.Handled = true; } };
         }
@@ -2342,6 +2435,30 @@ namespace RomCheckOMatic
         {
             int size = (int)Math.Round(14 * DeviceDpi / 96f);
             return new Rectangle(row.Left + 6, row.Top + (row.Height - size) / 2, size, size);
+        }
+
+        void RedrawRow(int i)
+        {
+            if (i >= 0 && i < Items.Count) Invalidate(GetItemRectangle(i));
+        }
+
+        // Windows clears the whole list before the rows are drawn, so they flash blank for a moment. The rows cover
+        // themselves, so only the empty space below the last one is cleared here.
+        protected override void WndProc(ref Message m)
+        {
+            const int WM_ERASEBKGND = 0x14;
+            if (m.Msg == WM_ERASEBKGND)
+            {
+                using (var g = Graphics.FromHdc(m.WParam))
+                using (var b = new SolidBrush(BackColor))
+                {
+                    int bottom = Items.Count == 0 ? 0 : GetItemRectangle(Items.Count - 1).Bottom;
+                    if (bottom < ClientSize.Height) g.FillRectangle(b, 0, Math.Max(0, bottom), ClientSize.Width, ClientSize.Height - Math.Max(0, bottom));
+                }
+                m.Result = (IntPtr)1;
+                return;
+            }
+            base.WndProc(ref m);
         }
 
         void Toggle(int i)
@@ -2372,19 +2489,26 @@ namespace RomCheckOMatic
 
         protected override void OnDrawItem(DrawItemEventArgs e)
         {
-            if (e.Index < 0) return;
-            var p = Theme.Current;
-            bool selected = (e.State & DrawItemState.Selected) != 0;
-            Color back = selected ? (p.Dark ? Color.FromArgb(0, 84, 153) : Color.FromArgb(204, 232, 255)) : BackColor;
-            using (var b = new SolidBrush(back)) e.Graphics.FillRectangle(b, e.Bounds);
-            string r = (string)Items[e.Index];
-            bool ticked = !Unticked.Contains(r);
-            var box = BoxRect(e.Bounds);
-            Theme.DrawTick(e.Graphics, box, ticked, e.Index == hover, true, DeviceDpi / 96f);
-            var text = new Rectangle(box.Right + 8, e.Bounds.Top, e.Bounds.Width - box.Right - 8, e.Bounds.Height);
-            Color colour = ticked ? (selected && p.Dark ? Color.White : p.Text) : p.Gray;
-            TextRenderer.DrawText(e.Graphics, ticked ? r : r + "  (left out)", Font, text, colour,
-                TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix);
+            if (e.Index < 0 || e.Bounds.Width <= 0 || e.Bounds.Height <= 0) return;
+            // Drawn off screen first and copied on in one go, so a row never shows half drawn.
+            using (var buffer = BufferedGraphicsManager.Current.Allocate(e.Graphics, e.Bounds))
+            {
+                var g = buffer.Graphics;
+                var p = Theme.Current;
+                bool selected = (e.State & DrawItemState.Selected) != 0;
+                Color back = selected ? (p.Dark ? Color.FromArgb(0, 84, 153) : Color.FromArgb(204, 232, 255)) : BackColor;
+                using (var b = new SolidBrush(back)) g.FillRectangle(b, e.Bounds);
+                string r = (string)Items[e.Index];
+                bool ticked = !Unticked.Contains(r);
+                var box = BoxRect(e.Bounds);
+                Theme.DrawTick(g, box, ticked, e.Index == hover, true, DeviceDpi / 96f);
+                var text = new Rectangle(box.Right + 8, e.Bounds.Top, e.Bounds.Width - box.Right - 8, e.Bounds.Height);
+                Color colour = ticked ? (selected && p.Dark ? Color.White : p.Text) : p.Gray;
+                TextRenderer.DrawText(g, ticked ? r : r + "  (left out)", Font, text, colour,
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix |
+                    TextFormatFlags.PreserveGraphicsTranslateTransform);   // the buffer is offset to the row
+                buffer.Render(e.Graphics);
+            }
         }
     }
 }

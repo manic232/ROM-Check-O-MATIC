@@ -4,9 +4,7 @@ A portable Windows app that checks No-Intro (cartridge), Redump (disc), MAME (ar
 
 > **100% AI-generated.** All of the code in this project was written by Claude (an AI by Anthropic), directed and tested by Michael Winn.
 
-![ROM Check O-MATIC with the light theme, checking a No-Intro set](docs/screenshot-light.png)
-
-![ROM Check O-MATIC with the dark theme](docs/screenshot-dark.png)
+![ROM Check O-MATIC checking a No-Intro set](docs/screenshot-light.png)
 
 ## Why another ROM manager?
 

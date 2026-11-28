@@ -1143,6 +1143,7 @@ namespace RomCheckOMatic
         public CueIndex Cues;
         public int Total;
         public int Have;    // games present, counting ones that only need renaming
+        public string Key;  // what it was scanned with (SavedResults.SystemKey), so saved results can be checked
 
         public int MissingCount { get { return Missing.Count(g => !g.Mia); } }
         public int MiaCount { get { return Missing.Count(g => g.Mia); } }

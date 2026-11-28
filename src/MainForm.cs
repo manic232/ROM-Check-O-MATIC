@@ -172,6 +172,7 @@ namespace RomCheckOMatic
                 // Adding downloads automatically also needs to know what's missing, so it scans too.
                 if (settings.AutoAdd) UpdateWatcher(false);
                 if ((settings.ScanOnOpen || watcher != null) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
+                else await ShowSavedResults();
                 if (settings.CheckUpdates) CheckForUpdate(false);
             };
             FormClosing += (s, e) =>
@@ -346,8 +347,21 @@ namespace RomCheckOMatic
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
             bottom.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            fixButton = MakeButton("Fix Wrong Names", (s, e) => FixFiles(ScopeFiles(f => f.IsFixable && f.CanChange)));
-            deleteButton = MakeButton("Delete Unneeded", (s, e) => DeleteFiles(ScopeFiles(f => f.IsUnneeded && f.CanChange)));
+            // With the saved results on show, these scan again first, then act on what's there now.
+            fixButton = MakeButton("Fix Wrong Names", async (s, e) =>
+            {
+                if (busy || !await ScanIfSaved()) return;
+                var files = ScopeFiles(f => f.IsFixable && f.CanChange);
+                if (files.Count == 0) statusLabel.Text = "Scanned again: nothing needs renaming now";
+                else FixFiles(files);
+            });
+            deleteButton = MakeButton("Delete Unneeded", async (s, e) =>
+            {
+                if (busy || !await ScanIfSaved()) return;
+                var files = ScopeFiles(f => f.IsUnneeded && f.CanChange);
+                if (files.Count == 0) statusLabel.Text = "Scanned again: nothing unneeded to delete now";
+                else DeleteFiles(files);
+            });
             exportButton = MakeButton("Save Report...", (s, e) => ExportReport());
             exportButton.Margin = new Padding(16, 3, 3, 3);
             progress = new ProgressBar { Dock = DockStyle.Fill, Margin = new Padding(8, 7, 3, 7), Visible = false };
@@ -608,6 +622,18 @@ namespace RomCheckOMatic
             scanOpenItem.Click += (s, e) => settings.ScanOnOpen = !settings.ScanOnOpen;
             themeMenu.Items.Add(scanOpenItem);
             Tips.Item(scanOpenItem, "Scans your set every time the app opens, so the lists are always up to date.");
+            var keepItem = new ToolStripMenuItem("Show the Last Scan When the App Opens");
+            keepItem.Click += async (s, e) =>
+            {
+                settings.KeepResults = !settings.KeepResults;
+                if (!settings.KeepResults) SavedResults.DeleteAll();
+                else if (!busy) await SaveResults();
+            };
+            themeMenu.Items.Add(keepItem);
+            const string keepTip = "Ticked: each scan's results are saved, and shown when the app opens (or you pick the collection)\n" +
+                                   "without scanning, with the date of the scan. Press Scan to check again. Fixing, deleting or\n" +
+                                   "adding ROMs scans again first, so the app acts on what's there now.\n" +
+                                   "Unticked: nothing is saved (saved results are deleted), and the lists are empty until you scan.";
             var recycleItem = new ToolStripMenuItem("Delete to the Recycle Bin");
             recycleItem.Click += (s, e) => { settings.UseRecycleBin = !settings.UseRecycleBin; Fixer.UseRecycleBin = settings.UseRecycleBin; };
             themeMenu.Items.Add(recycleItem);
@@ -649,6 +675,13 @@ namespace RomCheckOMatic
                 Tips.Item(scanOpenItem, settings.AutoAdd
                     ? "The app always scans when it opens while Add Downloads Automatically is on,\nas it needs to know what's missing. Untick that to choose here."
                     : "Scans your set every time the app opens, so the lists are always up to date.");
+                // Showing the last scan only matters when the app doesn't scan as it opens.
+                bool scansAnyway = settings.ScanOnOpen || settings.AutoAdd;
+                keepItem.Enabled = !scansAnyway;
+                keepItem.Checked = settings.KeepResults;
+                Tips.Item(keepItem, scansAnyway
+                    ? "Not needed while the app scans when it opens (Scan When the App Opens, or\nAdd Downloads Automatically, is on). Untick that to choose here."
+                    : keepTip);
                 fitItem.Checked = settings.AutoFitColumns;
                 tipsItem.Checked = settings.ShowTips;
                 recycleItem.Checked = settings.UseRecycleBin;
@@ -753,6 +786,8 @@ namespace RomCheckOMatic
             settings.Collection = picked;
             FillCollectionBox();
             results.Clear();
+            showingSaved = false;
+            resultsKey = null;
             changesButton.Visible = false;
             index = null;
             RefreshAll();
@@ -760,7 +795,8 @@ namespace RomCheckOMatic
             await LoadDats();
             if (settings.AutoAdd) UpdateWatcher(false);
             if (Directory.Exists(romBox.Text.Trim()) && (settings.ScanOnOpen || watcher != null)) Scan();
-            else statusLabel.Text = romBox.Text.Trim().Length == 0 ? "Choose the ROM Set Folder and DAT Set Folder for the " + picked + " collection" : "Ready";
+            else if (romBox.Text.Trim().Length == 0) statusLabel.Text = "Choose the ROM Set Folder and DAT Set Folder for the " + picked + " collection";
+            else { statusLabel.Text = "Ready"; await ShowSavedResults(); }
         }
 
         // ------------------------------------------------------------ fitting columns
@@ -898,6 +934,13 @@ namespace RomCheckOMatic
         async void RenameFolders(List<SystemResult> list)
         {
             if (busy || list.Count == 0) return;
+            if (showingSaved)
+            {
+                var folders = list.Select(s => s.Folder).ToList();
+                if (!await ScanIfSaved()) return;
+                list = FoldersToRename(results.Where(s => folders.Any(f => SamePath(f, s.Folder))));
+                if (list.Count == 0) { statusLabel.Text = "Scanned again: no folders need renaming now"; return; }
+            }
             var lines = list.Take(12).Select(s => s.FolderName + "\n      → " + DatFolderName(s)).ToList();
             if (list.Count > 12) lines.Add("...and " + (list.Count - 12) + " more");
             string msg = "Rename " + Count(list.Count, "folder") + " to the system name and DAT date?\n\n" +
@@ -1303,31 +1346,43 @@ namespace RomCheckOMatic
         async void Scan()
         {
             if (busy) { if (cts != null) cts.Cancel(); return; }
+            await ScanAsync();
+        }
+
+        // True if the scan finished.
+        async Task<bool> ScanAsync()
+        {
+            if (busy) return false;
             string root = romBox.Text.Trim();
             if (!Directory.Exists(root))
             {
                 ThemedBox.Show(this, "Choose the folder that holds your No-Intro set first.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                return false;
             }
             settings.RomFolder = root;
             if (index == null || !SamePath(index.Root, datBox.Text)) await LoadDats();
             if (index.ByName.Count == 0)
             {
                 ThemedBox.Show(this, "No DAT files were found in the DAT Set Folder. Choose the folder where your DAT pack is, or use DAT Files > Import.", Text);
-                return;
+                return false;
             }
 
             SetBusy(true);
             results.Clear();
+            showingSaved = false;
+            resultsKey = null;   // only a finished scan is saved
             changesButton.Visible = false;
             RefreshAll();
+            string key = ResultsKey();
+            var startedAt = DateTime.Now;
+            bool finished = false;
             cts = new CancellationTokenSource();
             var ct = cts.Token;
             var opts = settings.ScanOptions();
             var manual = settings.DatMap();
             var idx = index;
             var report = new Progress<string[]>(p => Progress(p[0], int.Parse(p[1]), int.Parse(p[2])));
-            var added = new Progress<SystemResult>(r => { results.Add(r); RefreshSystems(); });
+            var added = new Progress<SystemResult>(r => { r.Key = SavedResults.SystemKey(r, opts); results.Add(r); RefreshSystems(); });
             var sw = Stopwatch.StartNew();
             try
             {
@@ -1355,6 +1410,10 @@ namespace RomCheckOMatic
                 string scanned = "Scanned " + results.Count + " folder" + (results.Count == 1 ? "" : "s") + " in " + sw.Elapsed.TotalSeconds.ToString("0.0") + "s";
                 statusLabel.Text = scanned;
                 await CompareWithLastScan(scanned);
+                resultsKey = key;
+                resultsScannedAt = startedAt;
+                await SaveResults();
+                finished = true;
             }
             catch (OperationCanceledException) { statusLabel.Text = "Scan stopped"; }
             catch (Exception ex)
@@ -1363,6 +1422,7 @@ namespace RomCheckOMatic
                 ThemedBox.Show(this, "The scan failed:\n\n" + ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally { SetBusy(false); RefreshAll(); }
+            return finished;
         }
 
         async Task Rescan(IEnumerable<string> folders)
@@ -1380,6 +1440,7 @@ namespace RomCheckOMatic
                 var fresh = await Task.Run(() => list.Select(f => Scanner.ScanSystem(f, idx, manual, opts, null, ct)).ToList(), ct);
                 foreach (var r in fresh)
                 {
+                    r.Key = SavedResults.SystemKey(r, opts);
                     int i = results.FindIndex(x => SamePath(x.Folder, r.Folder));
                     if (i >= 0) results[i] = r; else results.Add(r);
                 }
@@ -1393,9 +1454,94 @@ namespace RomCheckOMatic
                     ScanHistory.Update(history, fresh);
                     ScanHistory.Save(path, history);
                 });
+                // The saved results too, unless the folders or DATs have changed since the full scan.
+                if (resultsKey != null && resultsKey != ResultsKey()) resultsKey = null;
+                await SaveResults();
             }
             catch (OperationCanceledException) { }
             finally { SetBusy(false); RefreshAll(); }
+        }
+
+        // ------------------------------------------------------------ saved results (the last scan, shown when the app opens)
+
+        // The results on show came from the saved results, not a scan since: anything that changes files scans again first.
+        bool showingSaved;
+        DateTime resultsScannedAt;   // when the full scan they came from was made
+        string resultsKey;           // the folders and DATs they were scanned with; null after an unfinished scan, so they aren't saved
+
+        string ResultsKey()
+        {
+            return SavedResults.Key(romBox.Text, datBox.Text, settings.CueFolder, index);
+        }
+
+        async Task SaveResults()
+        {
+            if (!settings.KeepResults || resultsKey == null) return;
+            var scan = new SavedScan { Key = resultsKey, ScannedAt = resultsScannedAt, Systems = results.ToList() };
+            string path = SavedResults.PathFor(settings.Collection);
+            await Task.Run(() => SavedResults.Save(path, scan));
+        }
+
+        // Shows the last scan's results, if there are any and they still fit the folders, DATs and settings.
+        async Task ShowSavedResults()
+        {
+            if (!settings.KeepResults || busy || index == null || index.ByName.Count == 0 || !Directory.Exists(romBox.Text.Trim())) return;
+            string path = SavedResults.PathFor(settings.Collection);
+            if (!File.Exists(path)) return;
+            string collection = settings.Collection;
+            SetBusy(true);
+            Progress("Reading the last scan's results...", 0, 0);
+            SavedScan scan = null;
+            try { scan = await Task.Run(() => SavedResults.Load(path)); }
+            finally { SetBusy(false); }
+            if (scan == null || settings.Collection != collection) { statusLabel.Text = "Ready"; return; }
+
+            // The same folders and DATs, and for each system the same DAT, regions, ROM types and ignore list.
+            var opts = settings.ScanOptions();
+            var manual = settings.DatMap();
+            bool fits = scan.Key == ResultsKey() && scan.Systems.All(s =>
+            {
+                var dat = index.Find(s.FolderName, manual);
+                return (s.Dat == null ? dat == null : dat != null && dat.Name == s.Dat.Name && dat.Version == s.Dat.Version) &&
+                       s.Key == SavedResults.SystemKey(s, opts);
+            });
+            if (!fits)
+            {
+                statusLabel.Text = "The folders, DAT files or settings have changed since the last scan. Press Scan to check your set.";
+                return;
+            }
+            results.Clear();
+            results.AddRange(scan.Systems);
+            showingSaved = true;
+            resultsKey = scan.Key;
+            resultsScannedAt = scan.ScannedAt;
+            RefreshAll();
+            statusLabel.Text = "Showing the last scan, from " + scan.ScannedAt.ToString("d MMM yyyy 'at' HH:mm", CultureInfo.CurrentCulture) +
+                               ". Press Scan to check again.";
+        }
+
+        // Before changing any files while the saved results are on show: scans again, so the app acts on what's
+        // there now. Returns false if the scan didn't finish. The selected system stays selected.
+        async Task<bool> ScanIfSaved()
+        {
+            if (!showingSaved) return true;
+            var sys = SelectedSystem();
+            string folder = sys != null ? sys.Folder : null;
+            if (!await ScanAsync()) return false;
+            if (folder != null)
+                foreach (ListViewItem item in systemList.Items)
+                {
+                    var s = item.Tag as SystemResult;
+                    if (s != null && SamePath(s.Folder, folder)) { item.Selected = true; item.EnsureVisible(); break; }
+                }
+            return true;
+        }
+
+        // The same files in the new results, if they're still the same kind (still misnamed, still unneeded...).
+        List<FileResult> SameFilesNow(List<FileResult> old)
+        {
+            var wanted = new HashSet<string>(old.Select(f => f.Path + "\n" + f.Name + "\n" + f.Kind), StringComparer.OrdinalIgnoreCase);
+            return results.SelectMany(s => s.Files).Where(f => wanted.Contains(f.Path + "\n" + f.Name + "\n" + f.Kind)).ToList();
         }
 
         // ------------------------------------------------------------ changes since the last scan
@@ -1473,7 +1619,7 @@ namespace RomCheckOMatic
             foreach (var s in results)
             {
                 ListViewItem item;
-                string own = s.OwnRegions || s.OwnTypes ? "✓" : "";
+                string own = s.OwnRegions && s.OwnTypes ? "Region/ROM" : s.OwnRegions ? "Region" : s.OwnTypes ? "ROM" : "";
                 if (s.Error != null)
                 {
                     item = new ListViewItem(new[] { s.FolderName, own, "", "", "", "", s.Error });
@@ -1792,6 +1938,12 @@ namespace RomCheckOMatic
         async void FixFiles(List<FileResult> files)
         {
             if (busy || files.Count == 0) return;
+            if (showingSaved)
+            {
+                if (!await ScanIfSaved()) return;
+                files = SameFilesNow(files);
+                if (files.Count == 0) { statusLabel.Text = "Scanned again: those files don't need renaming now"; return; }
+            }
             int rebuild = files.Count(f => f.IsArchive && f.NeedsRebuild);
             int zipping = files.Count(f => !f.IsSet && !f.LooseChd);
             string msg = "Rename " + Count(files.Count, "file") + " to " + (files.Count == 1 ? "its name" : "their names") + " in the DAT?";
@@ -1836,6 +1988,12 @@ namespace RomCheckOMatic
         async void DeleteFiles(List<FileResult> files)
         {
             if (busy || files.Count == 0) return;
+            if (showingSaved)
+            {
+                if (!await ScanIfSaved()) return;
+                files = SameFilesNow(files);
+                if (files.Count == 0) { statusLabel.Text = "Scanned again: those files aren't there now, or have changed"; return; }
+            }
             // Whole files, and zips that keep their ROM and only lose the extra files inside.
             var whole = files.Where(f => f.Kind != FileKind.ExtraInside).ToList();
             var inside = files.Where(f => f.Kind == FileKind.ExtraInside).ToList();
@@ -1961,13 +2119,14 @@ namespace RomCheckOMatic
             watcher.Ready += files => AutoAdd(files);
             watcher.AddExisting();
             statusLabel.Text = "Watching " + settings.IncomingFolder + " for downloads";
-            if (userClicked && !results.Any(r => r.Error == null) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
+            if (userClicked && (showingSaved || !results.Any(r => r.Error == null)) && Directory.Exists(romBox.Text.Trim()) && !busy) Scan();
         }
 
         // Adds the missing games in newly downloaded files, without asking.
         async void AutoAdd(List<string> files)
         {
             if (busy) return;
+            if (!await ScanIfSaved()) return;
             string folder = settings.IncomingFolder;
             bool remove = settings.RemoveDownloads;
             var idx = index;
@@ -2121,6 +2280,7 @@ namespace RomCheckOMatic
         async void AddFromFolder()
         {
             if (busy) return;
+            if (!await ScanIfSaved()) return;
             if (!results.Any(r => r.Error == null))
             {
                 ThemedBox.Show(this, "Scan your ROM set first, so the app knows which ROMs are missing.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);

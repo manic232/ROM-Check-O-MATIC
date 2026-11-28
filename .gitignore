@@ -12,3 +12,7 @@ No-Intro Love Pack*/
 
 # The record of the last scan, for "What changed" (one per collection)
 *.scan
+
+# The last scan's results, shown when the app opens (one per collection)
+*.results
+*.results.new
